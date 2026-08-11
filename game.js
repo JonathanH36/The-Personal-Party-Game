@@ -230,8 +230,33 @@ function beginSession() {
   });
 }
 
+// Ends the round that just finished (if any) with a scored summary showing
+// exactly how this round moved the leaderboard, rather than a running
+// scoreboard visible the whole way through. The very first round of a
+// session (nothing to summarise yet) skips straight in. Every round,
+// including the last one, gets its own summary before moving on.
 function advanceToNextRound() {
+  const justFinishedARound = !!DB.roundState;
+  if (justFinishedARound) {
+    const before = DB.session.scoreboardAtRoundStart || {};
+    const delta = {};
+    playerIds().forEach(id => { delta[id] = round1dp((DB.scoreboard[id] || 0) - (before[id] || 0)); });
+    DB.session.lastRoundSummary = { roundType: DB.session.currentRound, delta };
+  }
+
   DB.session.currentRoundIndex++;
+
+  if (justFinishedARound) {
+    // Pause on a summary screen; startPendingRound() (triggered by anyone's
+    // "Continue" tap, same as every other "next" button) decides from
+    // there whether another round follows or the session is over.
+    DB.meta.status = 'round_summary';
+    DB.roundState = null;
+    return;
+  }
+  startPendingRound();
+}
+function startPendingRound() {
   if (DB.session.currentRoundIndex >= DB.session.roundOrder.length) {
     DB.meta.status = 'session_end';
     DB.roundState = null;
@@ -239,10 +264,16 @@ function advanceToNextRound() {
   }
   const type = DB.session.roundOrder[DB.session.currentRoundIndex];
   DB.session.currentRound = type;
+  DB.meta.status = 'in_round';
+  DB.session.scoreboardAtRoundStart = { ...DB.scoreboard };
   if (type === 'truthComesOut') startTruthComesOut();
   else if (type === 'storyRound') startStoryRound();
   else if (type === 'splitTheRoom') startSplitTheRoom();
 }
+function continueFromRoundSummary() {
+  transactionalCommit(() => { startPendingRound(); });
+}
+function round1dp(n) { return Math.round(n * 10) / 10; }
 
 // ============================================================
 // ROUND 1 — Truth Comes Out
@@ -552,6 +583,7 @@ function render() {
   if (!joined) screen.appendChild(renderJoinForm());
   else if (DB.meta.status === 'lobby') screen.appendChild(renderLobby());
   else if (DB.meta.status === 'in_round') screen.appendChild(renderRound());
+  else if (DB.meta.status === 'round_summary') screen.appendChild(renderRoundSummary());
   else if (DB.meta.status === 'session_end') screen.appendChild(renderSessionEnd());
   appEl.appendChild(screen);
   appEl.appendChild(h('div', { class: 'footer-note' }, `Room ${ROOM_CODE} · synced live over Firebase.`));
@@ -734,7 +766,6 @@ function renderTruthComesOut() {
     scoreLines.forEach(l => wrap.appendChild(l));
     wrap.appendChild(h('button', { class: 'primary', onclick: truthNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
   }
-  wrap.appendChild(scoreboardMini());
   return wrap;
 }
 
@@ -804,12 +835,15 @@ function renderStoryRound() {
       ]));
     });
     const pts = rs.winners.length > 1 ? 0.5 : 1;
-    const contributors = new Set();
-    rs.winners.forEach(key => rs.stories[key].fields.forEach(f => f && contributors.add(f.contributorId)));
-    wrap.appendChild(h('div', { class: 'score-flash' }, `+${pts} to each contributor of the winning stor${rs.winners.length > 1 ? 'ies' : 'y'}: ${[...contributors].map(playerName).join(', ')}`));
+    const contributionCounts = {};
+    rs.winners.forEach(key => rs.stories[key].fields.forEach(f => { if (f) contributionCounts[f.contributorId] = (contributionCounts[f.contributorId] || 0) + 1; }));
+    const breakdown = Object.entries(contributionCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([id, count]) => `${playerName(id)} +${(pts * count).toFixed(pts * count % 1 === 0 ? 0 : 1)} (${count} line${count === 1 ? '' : 's'})`)
+      .join(', ');
+    wrap.appendChild(h('div', { class: 'score-flash' }, breakdown));
     wrap.appendChild(h('button', { class: 'primary', onclick: storyFinish }, 'Continue to next round'));
   }
-  wrap.appendChild(scoreboardMini());
   return wrap;
 }
 
@@ -862,11 +896,39 @@ function renderSplitTheRoom() {
     }
     wrap.appendChild(h('button', { class: 'primary', onclick: splitNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt'));
   }
-  wrap.appendChild(scoreboardMini());
   return wrap;
 }
 
 // ---------------- Session end ----------------
+const ROUND_DISPLAY_NAMES = { truthComesOut: 'Truth Comes Out', storyRound: 'Story Round', splitTheRoom: 'Split the Room' };
+
+function renderRoundSummary() {
+  const wrap = document.createDocumentFragment();
+  const summary = DB.session.lastRoundSummary;
+  wrap.appendChild(h('div', { class: 'eyebrow' }, 'Round complete'));
+  wrap.appendChild(h('h1', {}, ROUND_DISPLAY_NAMES[summary.roundType] || summary.roundType));
+
+  const list = h('div', { class: 'player-list' });
+  playerIds()
+    .slice()
+    .sort((a, b) => (summary.delta[b] || 0) - (summary.delta[a] || 0))
+    .forEach(id => {
+      const d = summary.delta[id] || 0;
+      const sign = d > 0 ? '+' : '';
+      list.appendChild(h('div', { class: 'player-row' }, [
+        h('span', {}, playerName(id)),
+        h('span', {}, [
+          h('span', { class: d < 0 ? 'score-flash negative' : 'score-flash', style: 'padding:3px 9px;font-size:13px;margin-right:10px;display:inline-flex;' }, `${sign}${d}`),
+          h('span', { class: 'score' }, String(DB.scoreboard[id] || 0))
+        ])
+      ]));
+    });
+  wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'eyebrow' }, 'This round · running total'), list]));
+
+  wrap.appendChild(h('button', { class: 'primary', onclick: continueFromRoundSummary }, 'Continue'));
+  return wrap;
+}
+
 function renderSessionEnd() {
   const wrap = document.createDocumentFragment();
   wrap.appendChild(h('div', { class: 'eyebrow' }, 'Session complete'));
