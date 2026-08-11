@@ -45,6 +45,40 @@ function shuffle(arr) {
 function sample(arr, n) { return shuffle(arr).slice(0, n); }
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function round1dp(n) { return Math.round(n * 10) / 10; }
+function numberInRange(rawValue, min, max) {
+  if (rawValue === '' || rawValue === null || rawValue === undefined) return false;
+  const v = Number(rawValue);
+  return Number.isFinite(v) && v >= min && v <= max;
+}
+function normalizeWord(w) { return (w || '').trim().toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function stripPlural(w) {
+  if (w.endsWith('ies') && w.length > 4) return w.slice(0, -3) + 'y';
+  if (w.endsWith('es') && w.length > 3) return w.slice(0, -2);
+  if (w.endsWith('s') && w.length > 3) return w.slice(0, -1);
+  return w;
+}
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+// Loose match: ignores case/punctuation, treats simple plurals as equal,
+// and tolerates a small typo (more slack on longer words).
+function wordsMatch(guess, actual) {
+  const g = stripPlural(normalizeWord(guess));
+  const a = stripPlural(normalizeWord(actual));
+  if (!g || !a) return false;
+  if (g === a) return true;
+  const tolerance = Math.max(a.length, g.length) <= 5 ? 1 : 2;
+  return levenshtein(g, a) <= tolerance;
+}
 
 // ---------------- Store ----------------
 let ROOM_CODE = null;
@@ -492,8 +526,7 @@ function crystalReveal() {
       entries.forEach(([pid, g]) => { if (Math.abs(Number(g) - Number(rs.subjectChoice)) === best) addScore(pid, 1); });
     }
   } else {
-    const norm = (s) => (s || '').trim().toLowerCase();
-    Object.entries(rs.guesses).forEach(([pid, g]) => { if (norm(g) === norm(rs.subjectChoice)) addScore(pid, 1); });
+    Object.entries(rs.guesses).forEach(([pid, g]) => { if (wordsMatch(g, rs.subjectChoice)) addScore(pid, 1); });
   }
 }
 function crystalNext() {
@@ -775,10 +808,18 @@ function renderCrystalBall() {
       ]));
     } else if (rs.subType === 'number') {
       const inp = h('input', { type: 'number', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
+      const err = h('div', { class: 'muted', style: 'color:var(--coral);font-size:12px;min-height:16px;' });
+      const btn = h('button', { class: 'primary', disabled: true, onclick: () => { const v = Number(inp.value); if (numberInRange(inp.value, rs.min, rs.max)) crystalSubmitChoice(viewingAs, v); } }, 'Submit');
+      inp.addEventListener('input', () => {
+        const ok = numberInRange(inp.value, rs.min, rs.max);
+        btn.disabled = !ok;
+        err.textContent = (!ok && inp.value !== '') ? `Must be between ${rs.min} and ${rs.max}.` : '';
+      });
       wrap.appendChild(h('div', { class: 'card raised' }, [
         h('label', { class: 'field' }, [`Your honest number (${rs.min}–${rs.max})`, inp]),
-        h('div', { style: 'height:10px' }),
-        h('button', { class: 'primary', onclick: () => { const v = Number(inp.value); if (inp.value !== '' && v >= rs.min && v <= rs.max) crystalSubmitChoice(viewingAs, v); } }, 'Submit')
+        err,
+        h('div', { style: 'height:6px' }),
+        btn
       ]));
     } else {
       wrap.appendChild(writeBox('Your honest one word.', (t) => crystalSubmitChoice(viewingAs, t)));
@@ -795,10 +836,18 @@ function renderCrystalBall() {
       ]));
     } else if (rs.subType === 'number') {
       const inp = h('input', { type: 'number', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
+      const err = h('div', { class: 'muted', style: 'color:var(--coral);font-size:12px;min-height:16px;' });
+      const btn = h('button', { class: 'primary', disabled: true, onclick: () => { const v = Number(inp.value); if (numberInRange(inp.value, rs.min, rs.max)) crystalSubmitGuess(viewingAs, v); } }, 'Submit');
+      inp.addEventListener('input', () => {
+        const ok = numberInRange(inp.value, rs.min, rs.max);
+        btn.disabled = !ok;
+        err.textContent = (!ok && inp.value !== '') ? `Must be between ${rs.min} and ${rs.max}.` : '';
+      });
       wrap.appendChild(h('div', { class: 'card raised' }, [
         h('label', { class: 'field' }, [`Your guess (${rs.min}–${rs.max})`, inp]),
-        h('div', { style: 'height:10px' }),
-        h('button', { class: 'primary', onclick: () => { const v = Number(inp.value); if (inp.value !== '' && v >= rs.min && v <= rs.max) crystalSubmitGuess(viewingAs, v); } }, 'Submit')
+        err,
+        h('div', { style: 'height:6px' }),
+        btn
       ]));
     } else {
       wrap.appendChild(writeBox('Your guess.', (t) => crystalSubmitGuess(viewingAs, t)));
@@ -812,9 +861,14 @@ function renderCrystalBall() {
     const list = h('div', { class: 'player-list' });
     Object.entries(rs.guesses).forEach(([pid, g]) => {
       const label = rs.subType === 'binary' ? (g === 'A' ? rs.optionA : rs.optionB) : String(g);
-      list.appendChild(h('div', { class: 'player-row' }, [h('span', {}, playerName(pid)), h('span', {}, label)]));
+      const gotIt = rs.subType === 'binary' ? g === rs.subjectChoice : rs.subType === 'singleWord' ? wordsMatch(g, rs.subjectChoice) : null;
+      list.appendChild(h('div', { class: 'player-row' }, [
+        h('span', {}, playerName(pid)),
+        h('span', {}, [label, gotIt ? h('span', { class: 'tag', style: 'color:var(--mint);margin-left:8px;' }, 'close enough ✓') : null])
+      ]));
     });
     wrap.appendChild(h('div', { class: 'card' }, list));
+    if (rs.subType === 'singleWord') wrap.appendChild(h('p', { class: 'muted' }, `Word guesses count if close: case, plurals and small typos don't matter.`));
     wrap.appendChild(h('button', { class: 'primary', onclick: crystalNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
   }
   return wrap;
