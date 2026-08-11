@@ -427,6 +427,11 @@ function startCrystalBall() {
   };
   crystalStartTurn();
 }
+function crystalDedupKey(subType, item) {
+  if (subType === 'binary') return item.optionA + '|' + item.optionB;
+  if (subType === 'number') return item.text;
+  return item;   // singleWord items are already plain strings
+}
 function crystalStartTurn() {
   const rs = DB.roundState;
   rs.subjectId = rs.subjectOrder[rs.turnIndex];
@@ -436,13 +441,11 @@ function crystalStartTurn() {
   rs.guesses = {};
   const subType = pick(['binary', 'number', 'singleWord']);
   rs.subType = subType;
-  const tier = DB.meta.is18Plus ? 'adult' : 'standard';
-  const bank = CONTENT.crystalBall[subType][tier].length ? CONTENT.crystalBall[subType] : { standard: CONTENT.crystalBall[subType].standard, adult: [] };
   const pool = DB.meta.is18Plus ? CONTENT.crystalBall[subType].standard.concat(CONTENT.crystalBall[subType].adult) : CONTENT.crystalBall[subType].standard;
   const usedKey = subType === 'binary' ? 'usedBinary' : subType === 'number' ? 'usedNumber' : 'usedSingleWord';
-  const remaining = pool.filter(q => !rs[usedKey].includes(q));
+  const remaining = pool.filter(q => !rs[usedKey].includes(crystalDedupKey(subType, q)));
   const chosen = remaining.length ? pick(remaining) : pick(pool);
-  rs[usedKey].push(chosen);
+  rs[usedKey].push(crystalDedupKey(subType, chosen));
   const subjectName = playerName(rs.subjectId);
   if (subType === 'binary') {
     rs.optionA = chosen.optionA;
@@ -460,6 +463,7 @@ function crystalSubmitChoice(playerId, choice) {
   transactionalCommit(() => {
     const rs = DB.roundState;
     if (rs.phase !== 'choosing' || playerId !== rs.subjectId) return;
+    if (rs.subType === 'number' && (typeof choice !== 'number' || choice < rs.min || choice > rs.max)) return;
     rs.subjectChoice = choice;
     rs.phase = 'guessing';
   });
@@ -469,6 +473,7 @@ function crystalSubmitGuess(playerId, guess) {
   transactionalCommit(() => {
     const rs = DB.roundState;
     if (rs.phase !== 'guessing' || playerId === rs.subjectId) return;
+    if (rs.subType === 'number' && (typeof guess !== 'number' || guess < rs.min || guess > rs.max)) return;
     rs.pendingGuesses[playerId] = guess;
     if (Object.keys(rs.pendingGuesses).length >= crystalEligibleGuessers().length) crystalReveal();
   });
@@ -769,11 +774,11 @@ function renderCrystalBall() {
         h('button', { class: 'option-btn', onclick: () => crystalSubmitChoice(viewingAs, 'B') }, rs.optionB)
       ]));
     } else if (rs.subType === 'number') {
-      const inp = h('input', { type: 'number', placeholder: `Between ${rs.min} and ${rs.max}` });
+      const inp = h('input', { type: 'number', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
       wrap.appendChild(h('div', { class: 'card raised' }, [
         h('label', { class: 'field' }, [`Your honest number (${rs.min}–${rs.max})`, inp]),
         h('div', { style: 'height:10px' }),
-        h('button', { class: 'primary', onclick: () => { if (inp.value !== '') crystalSubmitChoice(viewingAs, Number(inp.value)); } }, 'Submit')
+        h('button', { class: 'primary', onclick: () => { const v = Number(inp.value); if (inp.value !== '' && v >= rs.min && v <= rs.max) crystalSubmitChoice(viewingAs, v); } }, 'Submit')
       ]));
     } else {
       wrap.appendChild(writeBox('Your honest one word.', (t) => crystalSubmitChoice(viewingAs, t)));
@@ -789,11 +794,11 @@ function renderCrystalBall() {
         h('button', { class: 'option-btn', onclick: () => crystalSubmitGuess(viewingAs, 'B') }, rs.optionB)
       ]));
     } else if (rs.subType === 'number') {
-      const inp = h('input', { type: 'number', placeholder: `Between ${rs.min} and ${rs.max}` });
+      const inp = h('input', { type: 'number', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
       wrap.appendChild(h('div', { class: 'card raised' }, [
         h('label', { class: 'field' }, [`Your guess (${rs.min}–${rs.max})`, inp]),
         h('div', { style: 'height:10px' }),
-        h('button', { class: 'primary', onclick: () => { if (inp.value !== '') crystalSubmitGuess(viewingAs, Number(inp.value)); } }, 'Submit')
+        h('button', { class: 'primary', onclick: () => { const v = Number(inp.value); if (inp.value !== '' && v >= rs.min && v <= rs.max) crystalSubmitGuess(viewingAs, v); } }, 'Submit')
       ]));
     } else {
       wrap.appendChild(writeBox('Your guess.', (t) => crystalSubmitGuess(viewingAs, t)));
