@@ -434,6 +434,12 @@ function h(tag, attrs = {}, children = []) {
     if (k === 'class') el.className = v;
     else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'html') el.innerHTML = v;
+    else if (k === 'disabled' || k === 'checked' || k === 'readonly' || k === 'required') {
+      // Boolean HTML attributes: presence alone means "on", regardless of
+      // the string value, so setAttribute(k, false) still disables it.
+      if (v) el.setAttribute(k, '');
+      else el.removeAttribute(k);
+    }
     else el.setAttribute(k, v);
   });
   (Array.isArray(children) ? children : [children]).forEach(c => {
