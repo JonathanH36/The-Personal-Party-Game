@@ -8,7 +8,7 @@
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
-import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-database.js";
+import { getDatabase, ref, set, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-database.js";
 
 // Paste the config from your new Firebase project here.
 const firebaseConfig = {
@@ -112,10 +112,40 @@ function normalizeRoundState() {
 }
 
 async function commit() {
-  render();   // optimistic local paint
+  // Full-object overwrite. Only ever safe for the very first write to a
+  // brand new room (nobody else can be writing to it yet). Everything
+  // that happens once players are in a shared round goes through
+  // transactionalCommit below instead.
+  render();
   if (!ROOM_CODE) return;
   try { await set(ref(rtdb, 'lobbies/' + ROOM_CODE), DB); }
   catch (e) { console.error('Firebase write failed:', e); }
+}
+
+// Multiple players write to the same lobby object at once (everyone
+// submitting an answer or a vote within the same second or two). A plain
+// set() overwrites the whole object with whatever THIS client's local
+// copy looked like, silently discarding anyone else's write that landed
+// in between — which is exactly what caused the "last player's submit
+// does nothing" bug. A transaction fetches the true current server
+// value fresh, lets mutatorFn mutate THAT, and Firebase retries
+// automatically if another write lands in the meantime, so nobody's
+// contribution gets lost.
+async function transactionalCommit(mutatorFn) {
+  if (!ROOM_CODE) return;
+  const lobbyRef = ref(rtdb, 'lobbies/' + ROOM_CODE);
+  try {
+    await runTransaction(lobbyRef, (currentDB) => {
+      if (currentDB === null) return currentDB;   // room not created yet server-side, abort quietly
+      const savedDB = DB;
+      DB = currentDB;
+      normalizeDB();
+      mutatorFn();
+      const result = DB;
+      DB = savedDB;
+      return result;
+    });
+  } catch (e) { console.error('Firebase transaction failed:', e); }
 }
 
 function playerIds() { return DB ? Object.keys(DB.players) : []; }
@@ -152,23 +182,26 @@ async function joinAsNewPlayer(name) {
   name = name.trim();
   if (!name || !DB) return;
   const id = uid('player');
-  DB.players[id] = { name, joinedAt: Date.now() };
-  DB.scoreboard[id] = 0;
-  if (!DB.meta.hostId) DB.meta.hostId = id;
   viewingAs = id;
   joined = true;
   localStorage.setItem(identityKey(), id);
-  commit();
+  await transactionalCommit(() => {
+    DB.players[id] = { name, joinedAt: Date.now() };
+    DB.scoreboard[id] = 0;
+    if (!DB.meta.hostId) DB.meta.hostId = id;
+  });
 }
-function toggle18Plus() { DB.meta.is18Plus = !DB.meta.is18Plus; commit(); }
+function toggle18Plus() { transactionalCommit(() => { DB.meta.is18Plus = !DB.meta.is18Plus; }); }
 
 function beginSession() {
   const n = playerIds().length;
   if (n < 4 || n > 12) return;
-  DB.meta.status = 'in_round';
-  DB.session.roundOrder = shuffle(ROUND_TYPES);   // engine-randomised, not host-visible ahead of time
-  DB.session.currentRoundIndex = -1;
-  advanceToNextRound();
+  transactionalCommit(() => {
+    DB.meta.status = 'in_round';
+    DB.session.roundOrder = shuffle(ROUND_TYPES);   // engine-randomised, not host-visible ahead of time
+    DB.session.currentRoundIndex = -1;
+    advanceToNextRound();
+  });
 }
 
 function advanceToNextRound() {
@@ -176,7 +209,6 @@ function advanceToNextRound() {
   if (DB.session.currentRoundIndex >= DB.session.roundOrder.length) {
     DB.meta.status = 'session_end';
     DB.roundState = null;
-    commit();
     return;
   }
   const type = DB.session.roundOrder[DB.session.currentRoundIndex];
@@ -210,7 +242,6 @@ function startTruthComesOut() {
     votes: {}
   };
   startTruthTurn();
-  commit();
 }
 function truthPickQuestion() {
   const bank = DB.meta.is18Plus ? CONTENT.truthComesOut.standard.concat(CONTENT.truthComesOut.adult) : CONTENT.truthComesOut.standard;
@@ -231,11 +262,12 @@ function startTruthTurn() {
   rs.votes = {};
 }
 function truthSubmitAnswer(playerId, text) {
-  const rs = DB.roundState;
   if (!text.trim()) return;
-  rs.pendingAnswers[playerId] = text.trim();
-  if (Object.keys(rs.pendingAnswers).length >= playerIds().length) truthAdvanceToVoting();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.pendingAnswers[playerId] = text.trim();
+    if (Object.keys(rs.pendingAnswers).length >= playerIds().length) truthAdvanceToVoting();
+  });
 }
 function truthAdvanceToVoting() {
   const rs = DB.roundState;
@@ -248,10 +280,11 @@ function truthAdvanceToVoting() {
 }
 function truthEligibleVoters() { return playerIds().filter(id => id !== DB.roundState.subjectId); }
 function truthSubmitVote(playerId, slotId) {
-  const rs = DB.roundState;
-  rs.votes[playerId] = slotId;
-  if (Object.keys(rs.votes).length >= truthEligibleVoters().length) truthReveal();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.votes[playerId] = slotId;
+    if (Object.keys(rs.votes).length >= truthEligibleVoters().length) truthReveal();
+  });
 }
 function truthReveal() {
   const rs = DB.roundState;
@@ -266,11 +299,12 @@ function truthReveal() {
   rs.anyoneCorrect = anyoneCorrect;
 }
 function truthNext() {
-  const rs = DB.roundState;
-  rs.turnIndex++;
-  if (rs.turnIndex >= rs.totalTurns) { advanceToNextRound(); return; }
-  startTruthTurn();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.turnIndex++;
+    if (rs.turnIndex >= rs.totalTurns) { advanceToNextRound(); return; }
+    startTruthTurn();
+  });
 }
 
 // ============================================================
@@ -292,15 +326,15 @@ function startStoryRound() {
     currentReadIndex: 0,
     votes: {}
   };
-  commit();
 }
 function storyStoryIndexFor(playerIndex, passIndex, n) { return (playerIndex + passIndex + 1) % n; }
 function storySubmitField(playerId, text) {
-  const rs = DB.roundState;
   if (!text.trim()) return;
-  rs.pendingFieldAnswers[playerId] = text.trim();
-  if (Object.keys(rs.pendingFieldAnswers).length >= rs.playerOrder.length) storyCommitPass();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.pendingFieldAnswers[playerId] = text.trim();
+    if (Object.keys(rs.pendingFieldAnswers).length >= rs.playerOrder.length) storyCommitPass();
+  });
 }
 function storyCommitPass() {
   const rs = DB.roundState;
@@ -324,17 +358,19 @@ function storyEnterReading() {
   rs.currentReadIndex = 0;
 }
 function storyNextRead() {
-  const rs = DB.roundState;
-  const keys = Object.keys(rs.stories);
-  rs.currentReadIndex++;
-  if (rs.currentReadIndex >= keys.length) { rs.phase = 'voting'; }
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    const keys = Object.keys(rs.stories);
+    rs.currentReadIndex++;
+    if (rs.currentReadIndex >= keys.length) { rs.phase = 'voting'; }
+  });
 }
 function storySubmitVote(playerId, storyKey) {
-  const rs = DB.roundState;
-  rs.votes[playerId] = storyKey;
-  if (Object.keys(rs.votes).length >= rs.playerOrder.length) storyReveal();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.votes[playerId] = storyKey;
+    if (Object.keys(rs.votes).length >= rs.playerOrder.length) storyReveal();
+  });
 }
 function storyReveal() {
   const rs = DB.roundState;
@@ -350,7 +386,7 @@ function storyReveal() {
     rs.stories[key].fields.forEach(f => { if (f) addScore(f.contributorId, pointsPerField); });
   });
 }
-function storyFinish() { advanceToNextRound(); commit(); }
+function storyFinish() { transactionalCommit(() => { advanceToNextRound(); }); }
 function storyFieldText(story, index) {
   const f = story.fields[index];
   return f ? f.value : '____';
@@ -381,7 +417,6 @@ function startSplitTheRoom() {
     votes: {}
   };
   splitStartInstance();
-  commit();
 }
 function splitEligiblePlayers() {
   return playerIds();
@@ -408,10 +443,11 @@ function splitStartInstance() {
   }
 }
 function splitSubmitVote(playerId, choice) {
-  const rs = DB.roundState;
-  rs.votes[playerId] = choice;
-  if (Object.keys(rs.votes).length >= splitEligiblePlayers().length) splitReveal();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.votes[playerId] = choice;
+    if (Object.keys(rs.votes).length >= splitEligiblePlayers().length) splitReveal();
+  });
 }
 function splitReveal() {
   const rs = DB.roundState;
@@ -440,11 +476,12 @@ function splitReveal() {
   }
 }
 function splitNext() {
-  const rs = DB.roundState;
-  rs.instanceIndex++;
-  if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
-  splitStartInstance();
-  commit();
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    rs.instanceIndex++;
+    if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
+    splitStartInstance();
+  });
 }
 
 // ============================================================
@@ -811,10 +848,13 @@ function renderSessionEnd() {
   const hostView = viewingAs === DB.meta.hostId;
   wrap.appendChild(h('button', {
     class: 'primary', disabled: !hostView, onclick: () => {
-      const keptPlayers = DB.players; const hostId = DB.meta.hostId;
-      DB = freshDB(); DB.players = keptPlayers; DB.meta.hostId = hostId;
-      Object.keys(DB.players).forEach(id => { DB.scoreboard[id] = 0; });
-      commit();
+      transactionalCommit(() => {
+        const keptPlayers = DB.players; const hostId = DB.meta.hostId;
+        const fresh = freshDB();
+        fresh.players = keptPlayers; fresh.meta.hostId = hostId;
+        Object.keys(fresh.players).forEach(id => { fresh.scoreboard[id] = 0; });
+        DB = fresh;
+      });
     }
   }, hostView ? 'Start a new session' : 'Waiting for host to start a new session'));
   return wrap;
