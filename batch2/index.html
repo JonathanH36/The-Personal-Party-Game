@@ -1,867 +1,248 @@
-// ============================================================
-// Party Game — Batch 2 test build
-// Same Firebase-transaction architecture as the main build.
-// This file only wires up Ranking Wars, Secret Opinions and
-// Crystal Ball, so it can be tested standalone without touching
-// the three already-working rounds. Merge later = copy the round
-// engine + render functions below into the main game.js and add
-// these three type strings to its ROUND_TYPES list.
-// ============================================================
-
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
-import { getDatabase, ref, set, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-database.js";
-
-const firebaseConfig = {
-  apiKey:            "AIzaSyCUTblha-C25gHX0JbTLRm696KbJ9HHXE4",
-  authDomain:        "the-personal-party-game.firebaseapp.com",
-  databaseURL:       "https://the-personal-party-game-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId:         "the-personal-party-game",
-  storageBucket:     "the-personal-party-game.firebasestorage.app",
-  messagingSenderId: "655989726158",
-  appId:             "1:655989726158:web:f38da417d45cb9befde99f"
-};
-
-const fbApp = initializeApp(firebaseConfig);
-const auth = getAuth(fbApp);
-const rtdb = getDatabase(fbApp);
-const _authReady = new Promise((resolve) => {
-  const unsub = onAuthStateChanged(auth, (user) => { if (user) { unsub(); resolve(user); } });
-  signInAnonymously(auth).catch((err) => console.error('Firebase auth error:', err));
-});
-
-const CONTENT = JSON.parse(document.getElementById('content-data').textContent);
-const ROUND_TYPES = ['rankingWars', 'secretOpinions', 'crystalBall'];
-
-function uid(prefix) { return prefix + '_' + Math.random().toString(36).slice(2, 9); }
-function shuffle(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Truth Comes Out — Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#12111a;
+  --panel:#1c1a29;
+  --panel-raised:#252236;
+  --coral:#ff5d6c;
+  --gold:#ffc857;
+  --mint:#5ee6c4;
+  --violet:#8d7bf0;
+  --paper:#f3efe6;
+  --line: rgba(243,239,230,0.12);
+  --text: #f3efe6;
+  --text-dim: rgba(243,239,230,0.62);
+  --radius: 18px;
+  --radius-sm: 10px;
 }
-function sample(arr, n) { return shuffle(arr).slice(0, n); }
-function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-function round1dp(n) { return Math.round(n * 10) / 10; }
-
-// ---------------- Store ----------------
-let ROOM_CODE = null;
-let DB = null;
-let viewingAs = null;
-let joined = false;
-
-const ROOM_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-function generateRoomCode() { return Array.from({ length: 4 }, () => ROOM_LETTERS[Math.floor(Math.random() * ROOM_LETTERS.length)]).join(''); }
-
-function freshDB() {
-  return {
-    meta: { hostId: null, is18Plus: false, status: 'lobby' },
-    players: {},
-    scoreboard: {},
-    session: { roundOrder: [], currentRoundIndex: -1, currentRound: null },
-    roundState: null
-  };
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background: radial-gradient(120% 140% at 15% -10%, #241f3a 0%, var(--ink) 45%), var(--ink);
+  color: var(--text);
+  font-family:'Space Grotesk', system-ui, sans-serif;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
 }
-
-function normalizeDB() {
-  if (!DB) return;
-  DB.meta = DB.meta || { hostId: null, is18Plus: false, status: 'lobby' };
-  DB.players = DB.players || {};
-  DB.scoreboard = DB.scoreboard || {};
-  DB.session = DB.session || { roundOrder: [], currentRoundIndex: -1, currentRound: null };
-  normalizeRoundState();
+h1,h2,h3{
+  font-family:'Fraunces', Georgia, serif;
+  font-weight:700;
+  margin:0 0 6px;
+  letter-spacing:-0.01em;
 }
-
-// Firebase drops empty objects/arrays entirely, so any collection that
-// starts empty comes back as `undefined` on every OTHER client's
-// snapshot, not {}. Restore whichever round is currently active.
-function normalizeRoundState() {
-  const rs = DB.roundState;
-  if (!rs) return;
-  if (rs.type === 'rankingWars') {
-    rs.rankings = rs.rankings || {};
-    rs.usedCategories = rs.usedCategories || [];
-  } else if (rs.type === 'secretOpinions') {
-    rs.pendingAnswers = rs.pendingAnswers || {};
-    rs.answers = rs.answers || {};
-    rs.revealOrder = rs.revealOrder || [];
-    rs.guessedBy = rs.guessedBy || {};
-    rs.currentGuesses = rs.currentGuesses || {};
-    rs.passResults = rs.passResults || [];
-    rs.usedTopic = rs.usedTopic || [];
-    rs.usedPickAPlayer = rs.usedPickAPlayer || [];
-  } else if (rs.type === 'crystalBall') {
-    rs.pendingGuesses = rs.pendingGuesses || {};
-    rs.guesses = rs.guesses || {};
-    rs.usedBinary = rs.usedBinary || [];
-    rs.usedNumber = rs.usedNumber || [];
-    rs.usedSingleWord = rs.usedSingleWord || [];
-  }
+.app{
+  max-width:480px;
+  margin:0 auto;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  position:relative;
+  padding-bottom: 90px;
 }
-
-async function commit() {
-  render();
-  if (!ROOM_CODE) return;
-  try { await set(ref(rtdb, 'lobbies/' + ROOM_CODE), DB); }
-  catch (e) { console.error('Firebase write failed:', e); }
+/* device switcher — the signature element: a row of phone "badges" you tap to become that player */
+.device-bar{
+  position:sticky; top:0; z-index:50;
+  background: rgba(18,17,26,0.92);
+  backdrop-filter: blur(10px);
+  border-bottom:1px solid var(--line);
+  padding:10px 14px 8px;
 }
-
-async function transactionalCommit(mutatorFn) {
-  if (!ROOM_CODE) return;
-  const lobbyRef = ref(rtdb, 'lobbies/' + ROOM_CODE);
-  try {
-    const result = await runTransaction(lobbyRef, (currentDB) => {
-      if (currentDB === null) return currentDB;
-      const savedDB = DB;
-      DB = currentDB;
-      normalizeDB();
-      mutatorFn();
-      const out = DB;
-      DB = savedDB;
-      return out;
-    });
-    if (result && result.committed && result.snapshot) {
-      DB = result.snapshot.val() || DB;
-      normalizeDB();
-      render();
-    }
-  } catch (e) { console.error('Firebase transaction failed:', e); }
+.device-bar-label{
+  font-size:11px; text-transform:uppercase; letter-spacing:0.12em;
+  color: var(--text-dim); margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;
 }
-
-function playerIds() { return DB ? Object.keys(DB.players) : []; }
-function playerName(id) { return DB && DB.players[id] ? DB.players[id].name : '?'; }
-function isHost(id) { return DB && DB.meta.hostId === id; }
-function addScore(id, delta) { DB.scoreboard[id] = round1dp((DB.scoreboard[id] || 0) + delta); }
-
-function identityKey() { return 'batch2_identity_' + ROOM_CODE; }
-
-async function enterRoom(code, isNewRoom) {
-  await _authReady;
-  ROOM_CODE = code;
-  localStorage.setItem('batch2_last_room', code);
-  const roomRef = ref(rtdb, 'lobbies/' + code);
-  if (isNewRoom) DB = freshDB();
-  onValue(roomRef, (snapshot) => {
-    const val = snapshot.val();
-    DB = val || freshDB();
-    normalizeDB();
-    const savedId = localStorage.getItem(identityKey());
-    if (savedId && DB.players[savedId]) { viewingAs = savedId; joined = true; }
-    render();
-  });
-  if (isNewRoom) await commit();
+.device-strip{
+  display:flex; gap:8px; overflow-x:auto; padding-bottom:2px;
+  scrollbar-width:none;
 }
-function leaveRoom() { ROOM_CODE = null; DB = null; viewingAs = null; joined = false; render(); }
-
-// ---------------- Lobby ----------------
-async function joinAsNewPlayer(name) {
-  name = name.trim();
-  if (!name || !DB) return;
-  const id = uid('player');
-  viewingAs = id;
-  joined = true;
-  localStorage.setItem(identityKey(), id);
-  await transactionalCommit(() => {
-    DB.players[id] = { name, joinedAt: Date.now() };
-    DB.scoreboard[id] = 0;
-    if (!DB.meta.hostId) DB.meta.hostId = id;
-  });
+.device-strip::-webkit-scrollbar{display:none;}
+.device-chip{
+  flex:0 0 auto;
+  display:flex; align-items:center; gap:6px;
+  background: var(--panel);
+  border:1px solid var(--line);
+  border-radius: 999px;
+  padding:7px 12px 7px 8px;
+  font-size:13px; font-weight:600;
+  color: var(--text-dim);
+  cursor:pointer;
+  white-space:nowrap;
+  transition: all .15s ease;
 }
-function toggle18Plus() { transactionalCommit(() => { DB.meta.is18Plus = !DB.meta.is18Plus; }); }
+.device-chip .dot{width:8px;height:8px;border-radius:50%;background:var(--text-dim);}
+.device-chip.active{
+  background: var(--coral);
+  color: var(--ink);
+  border-color: var(--coral);
+}
+.device-chip.active .dot{background:var(--ink);}
+.device-chip .host-tag{
+  font-size:9px; text-transform:uppercase; letter-spacing:0.06em;
+  background: rgba(0,0,0,0.25); padding:1px 5px; border-radius:5px;
+}
+.device-chip.active .host-tag{ background: rgba(0,0,0,0.15); }
 
-function beginSession() {
-  const n = playerIds().length;
-  if (n < 4 || n > 12) return;
-  transactionalCommit(() => {
-    DB.meta.status = 'in_round';
-    DB.session.roundOrder = shuffle(ROUND_TYPES);
-    DB.session.currentRoundIndex = -1;
-    advanceToNextRound();
-  });
+.screen{ padding: 22px 20px 20px; flex:1; display:flex; flex-direction:column; gap:16px; }
+.eyebrow{
+  font-size:11px; text-transform:uppercase; letter-spacing:0.14em;
+  color: var(--gold); font-weight:600;
+}
+.card{
+  background: var(--panel);
+  border:1px solid var(--line);
+  border-radius: var(--radius);
+  padding:18px;
+}
+.card.raised{ background: var(--panel-raised); }
+.muted{ color: var(--text-dim); font-size:14px; line-height:1.5; }
+input[type=text], input[type=number], textarea{
+  width:100%;
+  background: var(--ink);
+  border:1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding:12px 14px;
+  font-family:inherit;
+  font-size:15px;
+  resize:vertical;
+}
+textarea{min-height:70px;}
+input:focus, textarea:focus, button:focus-visible{
+  outline:2px solid var(--mint); outline-offset:2px;
+}
+label.field{ display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--text-dim); font-weight:600; }
+button{
+  font-family:inherit; font-weight:700; font-size:15px;
+  border:none; border-radius: var(--radius-sm);
+  padding:13px 18px;
+  cursor:pointer;
+  transition: transform .08s ease, filter .12s ease;
+}
+button:active{ transform: scale(0.98); }
+button.primary{ background: var(--coral); color: var(--ink); }
+button.primary:hover{ filter:brightness(1.08); }
+button.secondary{ background: transparent; color: var(--text); border:1px solid var(--line); }
+button.ghost{ background: transparent; color: var(--text-dim); border:1px dashed var(--line); }
+button:disabled{ opacity:0.35; cursor:not-allowed; }
+.btn-row{ display:flex; gap:10px; }
+.btn-row button{ flex:1; }
+
+.toggle-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.switch{ position:relative; width:46px; height:26px; }
+.switch input{ opacity:0; width:0; height:0; }
+.switch .track{
+  position:absolute; inset:0; background: var(--panel-raised); border:1px solid var(--line);
+  border-radius:999px; cursor:pointer; transition:.15s;
+}
+.switch .track:before{
+  content:""; position:absolute; width:18px; height:18px; left:3px; top:3px;
+  background: var(--text-dim); border-radius:50%; transition:.15s;
+}
+.switch input:checked + .track{ background: var(--coral); border-color:var(--coral); }
+.switch input:checked + .track:before{ transform: translateX(20px); background: var(--ink); }
+
+.player-list{ display:flex; flex-direction:column; gap:8px; }
+.player-row{
+  display:flex; align-items:center; justify-content:space-between;
+  background: var(--panel-raised); border-radius: var(--radius-sm); padding:10px 12px;
+  font-weight:600; font-size:14px;
+}
+.player-row .score{ color: var(--mint); font-family:'Space Grotesk'; }
+.pill{
+  display:inline-flex; align-items:center; font-size:11px; font-weight:700;
+  background: var(--violet); color:var(--ink); padding:2px 8px; border-radius:999px;
+  text-transform:uppercase; letter-spacing:0.04em;
 }
 
-function advanceToNextRound() {
-  const justFinishedARound = !!DB.roundState;
-  if (justFinishedARound) {
-    const before = DB.session.scoreboardAtRoundStart || {};
-    const delta = {};
-    playerIds().forEach(id => { delta[id] = round1dp((DB.scoreboard[id] || 0) - (before[id] || 0)); });
-    DB.session.lastRoundSummary = { roundType: DB.session.currentRound, delta };
-  }
-  DB.session.currentRoundIndex++;
-  if (justFinishedARound) {
-    DB.meta.status = 'round_summary';
-    DB.roundState = null;
-    return;
-  }
-  startPendingRound();
+.round-banner{
+  display:flex; align-items:baseline; justify-content:space-between; gap:10px;
 }
-function startPendingRound() {
-  if (DB.session.currentRoundIndex >= DB.session.roundOrder.length) {
-    DB.meta.status = 'session_end';
-    DB.roundState = null;
-    return;
-  }
-  const type = DB.session.roundOrder[DB.session.currentRoundIndex];
-  DB.session.currentRound = type;
-  DB.meta.status = 'in_round';
-  DB.session.scoreboardAtRoundStart = { ...DB.scoreboard };
-  if (type === 'rankingWars') startRankingWars();
-  else if (type === 'secretOpinions') startSecretOpinions();
-  else if (type === 'crystalBall') startCrystalBall();
-}
-function continueFromRoundSummary() { transactionalCommit(() => { startPendingRound(); }); }
+.round-banner .count{ font-size:13px; color:var(--text-dim); font-weight:600; }
 
-// ============================================================
-// ROUND — Ranking Wars
-// ============================================================
-function rankingTotalInstances() { return playerIds().length <= 8 ? 4 : 3; }
-function startRankingWars() {
-  DB.roundState = {
-    type: 'rankingWars',
-    totalInstances: rankingTotalInstances(),
-    instanceIndex: 0,
-    usedCategories: [],
-    phase: 'ranking',
-    category: '',
-    rankings: {}
-  };
-  rankingStartInstance();
+.prompt-text{ font-family:'Fraunces', serif; font-size:22px; line-height:1.3; font-weight:600; }
+
+.option-grid{ display:flex; flex-direction:column; gap:10px; }
+.option-btn{
+  width:100%; text-align:left;
+  background: var(--panel-raised);
+  border:1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding:16px;
+  font-size:16px; font-weight:600;
+  color: var(--text);
 }
-function rankingStartInstance() {
-  const rs = DB.roundState;
-  const bank = DB.meta.is18Plus ? CONTENT.rankingWars.standard.concat(CONTENT.rankingWars.adult) : CONTENT.rankingWars.standard;
-  const remaining = bank.filter(c => !rs.usedCategories.includes(c));
-  const category = remaining.length ? pick(remaining) : pick(bank);
-  rs.usedCategories.push(category);
-  rs.category = category;
-  rs.phase = 'ranking';
-  rs.rankings = {};
+.option-btn.picked{ background: var(--coral); color:var(--ink); border-color:var(--coral); }
+.option-btn .tag{
+  display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color: var(--text-dim); margin-bottom:4px; font-weight:700;
 }
-function rankingSubmit(playerId, orderedIds) {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    if (rs.phase !== 'ranking') return;
-    rs.rankings[playerId] = orderedIds;
-    if (Object.keys(rs.rankings).length >= playerIds().length) rankingReveal();
-  });
+.option-btn.picked .tag{ color: rgba(18,17,26,0.6); }
+
+.answer-slot{
+  background: var(--panel-raised); border:1px solid var(--line); border-radius: var(--radius-sm);
+  padding:14px; font-size:15px; cursor:pointer;
 }
-function rankingReveal() {
-  const rs = DB.roundState;
-  rs.phase = 'reveal';
-  const players = playerIds();
-  const n = players.length;
-  const avgRank = {};
-  const roundedAvg = {};
-  players.forEach(target => {
-    let sum = 0;
-    players.forEach(rater => { sum += (rs.rankings[rater].indexOf(target) + 1); });
-    avgRank[target] = round1dp(sum / n);
-    roundedAvg[target] = Math.round(sum / n);
-  });
-  players.forEach(rater => {
-    players.forEach(target => {
-      const placedAt = rs.rankings[rater].indexOf(target) + 1;
-      if (placedAt === roundedAvg[target]) addScore(rater, 1);
-    });
-  });
-  let unanimousFirst = null;
-  players.forEach(target => {
-    if (players.every(rater => rs.rankings[rater][0] === target)) unanimousFirst = target;
-  });
-  if (unanimousFirst) addScore(unanimousFirst, 1);
-  rs.avgRank = avgRank;
-  rs.roundedAvg = roundedAvg;
-  rs.unanimousFirst = unanimousFirst;
+.answer-slot.picked{ border-color: var(--mint); box-shadow:0 0 0 2px var(--mint) inset; }
+.answer-slot.correct{ border-color: var(--gold); box-shadow:0 0 0 2px var(--gold) inset; }
+.answer-slot .author{ font-size:12px; color:var(--mint); margin-top:6px; font-weight:600; }
+
+.waiting{
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:10px; padding:40px 10px; text-align:center; color: var(--text-dim);
 }
-function rankingNext() {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    rs.instanceIndex++;
-    if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
-    rankingStartInstance();
-  });
+.waiting .spinner{
+  width:34px; height:34px; border-radius:50%;
+  border:3px solid var(--line); border-top-color: var(--coral);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin{ to{ transform: rotate(360deg); } }
+
+.timer-badge{
+  font-variant-numeric: tabular-nums; font-weight:700; font-size:13px;
+  background: var(--panel-raised); color: var(--gold);
+  border-radius:999px; padding:5px 12px; display:inline-flex; gap:6px; align-items:center;
 }
 
-// ============================================================
-// ROUND — Secret Opinions
-// ============================================================
-function secretTotalInstances() { return playerIds().length <= 6 ? 4 : 3; }
-function startSecretOpinions() {
-  DB.roundState = {
-    type: 'secretOpinions',
-    totalInstances: secretTotalInstances(),
-    instanceIndex: 0,
-    usedTopic: [],
-    usedPickAPlayer: [],
-    phase: 'writing',
-    mode: null,
-    promptText: '',
-    pendingAnswers: {},
-    answers: {},
-    revealOrder: [],
-    currentRevealIndex: 0,
-    guessedBy: {},
-    currentGuesses: {},
-    passResults: []
-  };
-  secretStartInstance();
+.score-flash{
+  font-family:'Fraunces', serif; font-size:15px;
+  display:flex; align-items:center; gap:8px;
+  padding:10px 14px; border-radius: var(--radius-sm);
+  background: rgba(94,230,196,0.12); border:1px solid rgba(94,230,196,0.35); color: var(--mint);
 }
-function secretStartInstance() {
-  const rs = DB.roundState;
-  const useTopic = Math.random() < 0.6;
-  rs.mode = useTopic ? 'topicOpinion' : 'pickAPlayer';
-  rs.phase = 'writing';
-  rs.pendingAnswers = {};
-  rs.answers = {};
-  rs.revealOrder = [];
-  rs.currentRevealIndex = 0;
-  rs.guessedBy = {};
-  rs.currentGuesses = {};
-  rs.passResults = [];
-  if (useTopic) {
-    const pool = CONTENT.secretOpinions.topicOpinion.filter(q => !rs.usedTopic.includes(q));
-    rs.promptText = pool.length ? pick(pool) : pick(CONTENT.secretOpinions.topicOpinion);
-    rs.usedTopic.push(rs.promptText);
-  } else {
-    const pool = CONTENT.secretOpinions.pickAPlayer.filter(q => !rs.usedPickAPlayer.includes(q));
-    rs.promptText = pool.length ? pick(pool) : pick(CONTENT.secretOpinions.pickAPlayer);
-    rs.usedPickAPlayer.push(rs.promptText);
-  }
-}
-function secretSubmitAnswer(playerId, answer) {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    if (rs.phase !== 'writing') return;
-    rs.pendingAnswers[playerId] = answer;
-    if (Object.keys(rs.pendingAnswers).length >= playerIds().length) secretAdvanceToGuessing();
-  });
-}
-function secretAdvanceToGuessing() {
-  const rs = DB.roundState;
-  rs.answers = { ...rs.pendingAnswers };
-  rs.revealOrder = shuffle(Object.keys(rs.answers));
-  rs.currentRevealIndex = 0;
-  rs.currentGuesses = {};
-  rs.phase = 'guessing';
-}
-function secretEligibleGuessers() {
-  const rs = DB.roundState;
-  const authorId = rs.revealOrder[rs.currentRevealIndex];
-  return playerIds().filter(id => id !== authorId);
-}
-function secretAlreadyAccused(voterId, suspectId) {
-  const rs = DB.roundState;
-  return (rs.guessedBy[voterId] || []).includes(suspectId);
-}
-function secretSubmitGuess(voterId, suspectId) {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    if (rs.phase !== 'guessing') return;
-    if (secretAlreadyAccused(voterId, suspectId)) return;   // can't re-accuse the same player this instance
-    rs.currentGuesses[voterId] = suspectId;
-    const eligible = secretEligibleGuessers();
-    if (Object.keys(rs.currentGuesses).length >= eligible.length) secretCommitPass();
-  });
-}
-function secretCommitPass() {
-  const rs = DB.roundState;
-  const authorId = rs.revealOrder[rs.currentRevealIndex];
-  let correctCount = 0;
-  const guesses = [];
-  Object.entries(rs.currentGuesses).forEach(([voterId, suspectId]) => {
-    rs.guessedBy[voterId] = (rs.guessedBy[voterId] || []).concat(suspectId);
-    const correct = suspectId === authorId;
-    if (correct) { addScore(voterId, 1); correctCount++; }
-    guesses.push({ voterId, suspectId, correct });
-  });
-  const missedBy = Object.keys(rs.currentGuesses).length - correctCount;
-  if (missedBy > 0) addScore(authorId, missedBy);
-  rs.passResults.push({ authorId, answerText: rs.answers[authorId], guesses, correctCount, missedBy });
-  rs.currentGuesses = {};
-  rs.currentRevealIndex++;
-  if (rs.currentRevealIndex >= rs.revealOrder.length) rs.phase = 'reveal';
-}
-function secretFinish() {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    rs.instanceIndex++;
-    if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
-    secretStartInstance();
-  });
+.score-flash.negative{
+  background: rgba(255,93,108,0.12); border-color: rgba(255,93,108,0.35); color: var(--coral);
 }
 
-// ============================================================
-// ROUND — Crystal Ball
-// ============================================================
-function crystalTotalTurns() {
-  const n = playerIds().length;
-  return n <= 5 ? n * 2 : n;
+.field-strip{ display:flex; flex-wrap:wrap; gap:6px; }
+.field-chip{
+  font-size:11px; padding:4px 9px; border-radius:999px;
+  background: var(--panel-raised); color: var(--text-dim); border:1px solid var(--line);
 }
-function startCrystalBall() {
-  const n = playerIds().length;
-  const perPlayer = n <= 5 ? 2 : 1;
-  let order = [];
-  for (let i = 0; i < perPlayer; i++) order = order.concat(shuffle(playerIds()));
-  DB.roundState = {
-    type: 'crystalBall',
-    totalTurns: order.length,
-    turnIndex: 0,
-    subjectOrder: order,
-    usedBinary: [],
-    usedNumber: [],
-    usedSingleWord: [],
-    phase: 'choosing',
-    subjectId: null,
-    subType: null,
-    promptText: '',
-    optionA: null,
-    optionB: null,
-    min: null,
-    max: null,
-    subjectChoice: null,
-    pendingGuesses: {},
-    guesses: {}
-  };
-  crystalStartTurn();
-}
-function crystalStartTurn() {
-  const rs = DB.roundState;
-  rs.subjectId = rs.subjectOrder[rs.turnIndex];
-  rs.phase = 'choosing';
-  rs.subjectChoice = null;
-  rs.pendingGuesses = {};
-  rs.guesses = {};
-  const subType = pick(['binary', 'number', 'singleWord']);
-  rs.subType = subType;
-  const tier = DB.meta.is18Plus ? 'adult' : 'standard';
-  const bank = CONTENT.crystalBall[subType][tier].length ? CONTENT.crystalBall[subType] : { standard: CONTENT.crystalBall[subType].standard, adult: [] };
-  const pool = DB.meta.is18Plus ? CONTENT.crystalBall[subType].standard.concat(CONTENT.crystalBall[subType].adult) : CONTENT.crystalBall[subType].standard;
-  const usedKey = subType === 'binary' ? 'usedBinary' : subType === 'number' ? 'usedNumber' : 'usedSingleWord';
-  const remaining = pool.filter(q => !rs[usedKey].includes(q));
-  const chosen = remaining.length ? pick(remaining) : pick(pool);
-  rs[usedKey].push(chosen);
-  const subjectName = playerName(rs.subjectId);
-  if (subType === 'binary') {
-    rs.optionA = chosen.optionA;
-    rs.optionB = chosen.optionB;
-    rs.promptText = `${subjectName}: ${chosen.optionA} or ${chosen.optionB}?`;
-  } else if (subType === 'number') {
-    rs.min = chosen.min;
-    rs.max = chosen.max;
-    rs.promptText = chosen.text.replace(/\{Player\}/g, subjectName);
-  } else {
-    rs.promptText = chosen.replace(/\{Player\}/g, subjectName);
-  }
-}
-function crystalSubmitChoice(playerId, choice) {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    if (rs.phase !== 'choosing' || playerId !== rs.subjectId) return;
-    rs.subjectChoice = choice;
-    rs.phase = 'guessing';
-  });
-}
-function crystalEligibleGuessers() { return playerIds().filter(id => id !== DB.roundState.subjectId); }
-function crystalSubmitGuess(playerId, guess) {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    if (rs.phase !== 'guessing' || playerId === rs.subjectId) return;
-    rs.pendingGuesses[playerId] = guess;
-    if (Object.keys(rs.pendingGuesses).length >= crystalEligibleGuessers().length) crystalReveal();
-  });
-}
-function crystalReveal() {
-  const rs = DB.roundState;
-  rs.phase = 'reveal';
-  rs.guesses = { ...rs.pendingGuesses };
-  if (rs.subType === 'binary') {
-    Object.entries(rs.guesses).forEach(([pid, g]) => { if (g === rs.subjectChoice) addScore(pid, 1); });
-  } else if (rs.subType === 'number') {
-    const entries = Object.entries(rs.guesses);
-    if (entries.length) {
-      let best = Infinity;
-      entries.forEach(([pid, g]) => { const d = Math.abs(Number(g) - Number(rs.subjectChoice)); if (d < best) best = d; });
-      entries.forEach(([pid, g]) => { if (Math.abs(Number(g) - Number(rs.subjectChoice)) === best) addScore(pid, 1); });
-    }
-  } else {
-    const norm = (s) => (s || '').trim().toLowerCase();
-    Object.entries(rs.guesses).forEach(([pid, g]) => { if (norm(g) === norm(rs.subjectChoice)) addScore(pid, 1); });
-  }
-}
-function crystalNext() {
-  transactionalCommit(() => {
-    const rs = DB.roundState;
-    rs.turnIndex++;
-    if (rs.turnIndex >= rs.totalTurns) { advanceToNextRound(); return; }
-    crystalStartTurn();
-  });
-}
+.field-chip.done{ color: var(--mint); border-color: rgba(94,230,196,0.4); }
+.field-chip.current{ color: var(--gold); border-color: rgba(255,200,87,0.5); }
 
-// ============================================================
-// RENDER
-// ============================================================
-const appEl = document.getElementById('app');
+.story-read{ font-family:'Fraunces', serif; font-size:19px; line-height:1.6; }
+.story-read .blank{ color: var(--gold); font-weight:700; }
 
-function h(tag, attrs = {}, children = []) {
-  const el = document.createElement(tag);
-  Object.entries(attrs).forEach(([k, v]) => {
-    if (k === 'class') el.className = v;
-    else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (k === 'html') el.innerHTML = v;
-    else if (k === 'disabled' || k === 'checked' || k === 'readonly' || k === 'required') {
-      if (v) el.setAttribute(k, '');
-      else el.removeAttribute(k);
-    }
-    else el.setAttribute(k, v);
-  });
-  (Array.isArray(children) ? children : [children]).forEach(c => {
-    if (c === null || c === undefined) return;
-    el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-  });
-  return el;
-}
+.footer-note{ font-size:12px; color: var(--text-dim); text-align:center; padding:10px 0 0; }
 
-function render() {
-  appEl.innerHTML = '';
-  if (!ROOM_CODE) { appEl.appendChild(renderRoomGate()); return; }
-  appEl.appendChild(renderTopBar());
-  const screen = h('div', { class: 'screen' });
-  if (!joined) screen.appendChild(renderJoinForm());
-  else if (DB.meta.status === 'lobby') screen.appendChild(renderLobby());
-  else if (DB.meta.status === 'in_round') screen.appendChild(renderRound());
-  else if (DB.meta.status === 'round_summary') screen.appendChild(renderRoundSummary());
-  else if (DB.meta.status === 'session_end') screen.appendChild(renderSessionEnd());
-  appEl.appendChild(screen);
-  appEl.appendChild(h('div', { class: 'footer-note' }, `Room ${ROOM_CODE} · batch 2 test build · synced live over Firebase.`));
+.top-bar-lobby{ display:flex; align-items:center; justify-content:space-between; }
+.code-badge{
+  font-family:'Space Grotesk'; font-weight:700; letter-spacing:0.08em;
+  background: var(--panel-raised); padding:6px 12px; border-radius:999px; font-size:13px;
 }
-
-function renderRoomGate() {
-  const wrap = h('div', { class: 'screen' });
-  wrap.appendChild(h('div', { class: 'eyebrow' }, 'Batch 2 test build'));
-  wrap.appendChild(h('h1', {}, 'Start or join a game'));
-  wrap.appendChild(h('div', { class: 'card raised' }, [
-    h('div', { style: 'font-weight:700;margin-bottom:6px;' }, 'Host a new game'),
-    h('p', { class: 'muted' }, `Ranking Wars, Secret Opinions and Crystal Ball only. Creates a fresh 4-letter room code.`),
-    h('button', { class: 'primary', onclick: async () => { await enterRoom(generateRoomCode(), true); } }, 'Create game')
-  ]));
-  const codeInput = h('input', { type: 'text', placeholder: 'e.g. ABCD', maxlength: '4', style: 'text-transform:uppercase;' });
-  wrap.appendChild(h('div', { class: 'card raised' }, [
-    h('div', { style: 'font-weight:700;margin-bottom:6px;' }, 'Join with a code'),
-    h('label', { class: 'field' }, ['Room code', codeInput]),
-    h('div', { style: 'height:10px' }),
-    h('button', { class: 'secondary', onclick: async () => { const v = codeInput.value.trim().toUpperCase(); if (v.length === 4) await enterRoom(v, false); } }, 'Join game')
-  ]));
-  const lastRoom = localStorage.getItem('batch2_last_room');
-  if (lastRoom) wrap.appendChild(h('button', { class: 'ghost', onclick: async () => { await enterRoom(lastRoom, false); } }, `Rejoin your last room (${lastRoom})`));
-  return wrap;
-}
-function renderTopBar() {
-  const bar = h('div', { class: 'device-bar' });
-  bar.appendChild(h('div', { class: 'top-bar-lobby' }, [
-    h('span', { class: 'code-badge' }, ROOM_CODE),
-    h('span', { style: 'font-size:13px;color:var(--text-dim);' }, joined ? `You: ${playerName(viewingAs)}` : 'Not joined yet'),
-    h('span', { style: 'cursor:pointer;text-decoration:underline;font-size:12px;color:var(--text-dim);', onclick: leaveRoom }, 'leave room')
-  ]));
-  return bar;
-}
-function renderJoinForm() {
-  const wrap = document.createDocumentFragment();
-  wrap.appendChild(h('div', { class: 'eyebrow' }, 'Lobby ' + ROOM_CODE));
-  wrap.appendChild(h('h1', {}, 'Enter your name'));
-  const n = playerIds().length;
-  if (n > 0) {
-    wrap.appendChild(h('div', { class: 'card' }, [
-      h('div', { class: 'eyebrow' }, `${n} joined so far`),
-      h('div', { class: 'player-list' }, playerIds().map(id => h('div', { class: 'player-row' }, [h('span', {}, playerName(id)), isHost(id) ? h('span', { class: 'pill' }, 'Host') : null])))
-    ]));
-  }
-  const nameInput = h('input', { type: 'text', placeholder: 'Your name' });
-  wrap.appendChild(h('div', { class: 'card raised' }, [
-    h('label', { class: 'field' }, ['Name', nameInput]),
-    h('div', { style: 'height:10px' }),
-    h('button', { class: 'primary', onclick: () => joinAsNewPlayer(nameInput.value) }, 'Join lobby')
-  ]));
-  return wrap;
-}
-function renderLobby() {
-  const wrap = document.createDocumentFragment();
-  wrap.appendChild(h('div', { class: 'eyebrow' }, 'Lobby ' + ROOM_CODE));
-  wrap.appendChild(h('h1', {}, 'Batch 2 test build'));
-  wrap.appendChild(h('p', { class: 'muted' }, `4 to 12 players. Waiting for everyone to join on their own phone.`));
-  const n = playerIds().length;
-  const list = h('div', { class: 'card' });
-  list.appendChild(h('div', { class: 'eyebrow' }, `${n} player${n === 1 ? '' : 's'} joined`));
-  const pl = h('div', { class: 'player-list' });
-  playerIds().forEach(id => {
-    pl.appendChild(h('div', { class: 'player-row' }, [
-      h('span', {}, [playerName(id), isHost(id) ? h('span', { class: 'pill', style: 'margin-left:8px;' }, 'Host') : null]),
-      id === viewingAs ? h('span', { class: 'muted', style: 'font-size:12px;' }, 'you') : null
-    ]));
-  });
-  list.appendChild(pl);
-  wrap.appendChild(list);
-  const hostView = viewingAs === DB.meta.hostId;
-  const controls = h('div', { class: 'card' });
-  controls.appendChild(h('div', { class: 'eyebrow' }, 'Host controls'));
-  controls.appendChild(h('div', { class: 'toggle-row' }, [
-    h('div', {}, [h('strong', {}, '18+ content'), h('div', { class: 'muted' }, 'Off means every question stays standard-tier.')]),
-    h('label', { class: 'switch' }, [
-      (() => { const i = h('input', { type: 'checkbox' }); i.checked = DB.meta.is18Plus; i.disabled = !hostView; i.addEventListener('change', toggle18Plus); return i; })(),
-      h('span', { class: 'track' })
-    ])
-  ]));
-  wrap.appendChild(controls);
-  const canBegin = n >= 4 && n <= 12;
-  wrap.appendChild(h('button', { class: 'primary', onclick: beginSession, disabled: !(canBegin && hostView) }, canBegin ? 'Begin session' : `Need 4 to 12 players`));
-  if (!hostView) wrap.appendChild(h('p', { class: 'muted' }, `Only the host (${playerName(DB.meta.hostId)}) can toggle 18+ or begin.`));
-  return wrap;
-}
-function renderRound() {
-  const type = DB.session.currentRound;
-  if (type === 'rankingWars') return renderRankingWars();
-  if (type === 'secretOpinions') return renderSecretOpinions();
-  if (type === 'crystalBall') return renderCrystalBall();
-  return h('div', {}, 'Unknown round');
-}
-function roundBanner(title, indexLabel) {
-  return h('div', { class: 'round-banner' }, [
-    h('div', {}, [h('div', { class: 'eyebrow' }, DB.session.currentRound), h('h2', {}, title)]),
-    h('div', { class: 'count' }, indexLabel)
-  ]);
-}
-function writeBox(label, onSubmit) {
-  const box = h('div', { class: 'card raised' });
-  const t = h('textarea', {}); t.id = 'write-input';
-  box.appendChild(h('label', { class: 'field' }, [label, t]));
-  box.appendChild(h('div', { style: 'height:10px' }));
-  box.appendChild(h('button', { class: 'primary', onclick: () => { const v = document.getElementById('write-input').value; if (v.trim()) onSubmit(v); } }, 'Submit'));
-  return box;
-}
-function waitingBlock(text) { return h('div', { class: 'waiting' }, [h('div', { class: 'spinner' }), h('div', {}, text)]); }
-
-// ---------------- Ranking Wars UI ----------------
-function renderRankingWars() {
-  const rs = DB.roundState;
-  const wrap = document.createDocumentFragment();
-  wrap.appendChild(roundBanner('Ranking Wars', `Round ${rs.instanceIndex + 1} / ${rs.totalInstances}`));
-  wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'prompt-text' }, rs.category)]));
-
-  if (rs.phase === 'ranking') {
-    if (rs.rankings[viewingAs]) {
-      wrap.appendChild(waitingBlock(`Ranking locked in. Waiting on ${playerIds().length - Object.keys(rs.rankings).length} more...`));
-    } else {
-      wrap.appendChild(h('p', { class: 'muted' }, 'Tap players in order, best fit first. Tap again to undo.'));
-      const myOrder = (renderRankingWars._draft && renderRankingWars._draft[viewingAs]) || [];
-      const list = h('div', { class: 'option-grid' });
-      playerIds().forEach(pid => {
-        const idx = myOrder.indexOf(pid);
-        const btn = h('button', {
-          class: 'option-btn' + (idx >= 0 ? ' picked' : ''),
-          onclick: () => {
-            renderRankingWars._draft = renderRankingWars._draft || {};
-            const arr = renderRankingWars._draft[viewingAs] || [];
-            const pos = arr.indexOf(pid);
-            if (pos >= 0) arr.splice(pos, 1); else arr.push(pid);
-            renderRankingWars._draft[viewingAs] = arr;
-            render();
-          }
-        }, [idx >= 0 ? h('span', { class: 'tag' }, `Rank ${idx + 1}`) : null, playerName(pid)]);
-        list.appendChild(btn);
-      });
-      wrap.appendChild(list);
-      const complete = myOrder.length === playerIds().length;
-      wrap.appendChild(h('button', {
-        class: 'primary', disabled: !complete,
-        onclick: () => { rankingSubmit(viewingAs, myOrder); renderRankingWars._draft = {}; }
-      }, complete ? 'Submit ranking' : `Rank everyone to submit (${myOrder.length}/${playerIds().length})`));
-    }
-  } else if (rs.phase === 'reveal') {
-    const list = h('div', { class: 'player-list' });
-    playerIds()
-      .slice()
-      .sort((a, b) => rs.roundedAvg[a] - rs.roundedAvg[b])
-      .forEach(id => {
-        list.appendChild(h('div', { class: 'player-row' }, [
-          h('span', {}, playerName(id)),
-          h('span', { class: 'muted' }, `avg rank ${rs.avgRank[id]} → rounds to ${rs.roundedAvg[id]}`)
-        ]));
-      });
-    wrap.appendChild(h('div', { class: 'card' }, list));
-    wrap.appendChild(h('div', { class: 'score-flash' }, `+1 to anyone whose placement of a player matched that player's rounded average.`));
-    if (rs.unanimousFirst) wrap.appendChild(h('div', { class: 'score-flash' }, `+1 bonus to ${playerName(rs.unanimousFirst)}: everyone independently ranked them 1st.`));
-    wrap.appendChild(h('button', { class: 'primary', onclick: rankingNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next category'));
-  }
-  return wrap;
-}
-
-// ---------------- Secret Opinions UI ----------------
-function renderSecretOpinions() {
-  const rs = DB.roundState;
-  const wrap = document.createDocumentFragment();
-  wrap.appendChild(roundBanner('Secret Opinions', `Round ${rs.instanceIndex + 1} / ${rs.totalInstances}`));
-  wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'prompt-text' }, rs.promptText)]));
-
-  if (rs.phase === 'writing') {
-    if (rs.pendingAnswers[viewingAs] !== undefined) {
-      wrap.appendChild(waitingBlock(`Answer locked in. Waiting on ${playerIds().length - Object.keys(rs.pendingAnswers).length} more...`));
-    } else if (rs.mode === 'pickAPlayer') {
-      const grid = h('div', { class: 'option-grid' });
-      playerIds().filter(id => id !== viewingAs).forEach(id => {
-        grid.appendChild(h('button', { class: 'option-btn', onclick: () => secretSubmitAnswer(viewingAs, id) }, playerName(id)));
-      });
-      wrap.appendChild(h('p', { class: 'muted' }, 'Pick someone (not yourself).'));
-      wrap.appendChild(grid);
-    } else {
-      wrap.appendChild(writeBox('Your honest answer.', (t) => secretSubmitAnswer(viewingAs, t)));
-    }
-  } else if (rs.phase === 'guessing') {
-    const authorId = rs.revealOrder[rs.currentRevealIndex];
-    const answerText = rs.mode === 'pickAPlayer' ? playerName(rs.answers[authorId]) : rs.answers[authorId];
-    wrap.appendChild(h('div', { class: 'card raised' }, [
-      h('span', { class: 'eyebrow' }, `Answer ${rs.currentRevealIndex + 1} of ${rs.revealOrder.length}`),
-      h('div', { class: 'prompt-text', style: 'margin-top:6px;' }, answerText)
-    ]));
-    if (viewingAs === authorId) {
-      wrap.appendChild(waitingBlock(`That one's yours — sit tight while the others guess.`));
-    } else if (rs.currentGuesses[viewingAs] !== undefined) {
-      wrap.appendChild(waitingBlock(`Guess locked in. Waiting on ${secretEligibleGuessers().length - Object.keys(rs.currentGuesses).length} more...`));
-    } else {
-      const grid = h('div', { class: 'option-grid' });
-      playerIds().filter(id => id !== viewingAs).forEach(id => {
-        const already = secretAlreadyAccused(viewingAs, id);
-        grid.appendChild(h('button', { class: 'option-btn', disabled: already, onclick: () => secretSubmitGuess(viewingAs, id) }, [
-          playerName(id), already ? h('span', { class: 'tag', style: 'display:block;' }, 'already guessed this round') : null
-        ]));
-      });
-      wrap.appendChild(h('p', { class: 'muted' }, `Who wrote this? You can't accuse the same player twice this round.`));
-      wrap.appendChild(grid);
-    }
-  } else if (rs.phase === 'reveal') {
-    rs.passResults.forEach(pr => {
-      const answerText = rs.mode === 'pickAPlayer' ? `picked ${playerName(pr.answerText)}` : `"${pr.answerText}"`;
-      wrap.appendChild(h('div', { class: 'card raised' }, [
-        h('span', { class: 'eyebrow' }, playerName(pr.authorId)),
-        h('div', { style: 'margin:4px 0 8px;' }, answerText),
-        h('div', { class: 'muted' }, `${pr.correctCount} correct guess${pr.correctCount === 1 ? '' : 'es'} · +${pr.missedBy} to ${playerName(pr.authorId)} for staying hidden from ${pr.missedBy}`)
-      ]));
-    });
-    wrap.appendChild(h('button', { class: 'primary', onclick: secretFinish }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt'));
-  }
-  return wrap;
-}
-
-// ---------------- Crystal Ball UI ----------------
-function renderCrystalBall() {
-  const rs = DB.roundState;
-  const wrap = document.createDocumentFragment();
-  wrap.appendChild(roundBanner('Crystal Ball', `Turn ${rs.turnIndex + 1} / ${rs.totalTurns}`));
-  wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'prompt-text' }, rs.promptText)]));
-
-  if (rs.phase === 'choosing') {
-    if (viewingAs !== rs.subjectId) {
-      wrap.appendChild(waitingBlock(`Waiting on ${playerName(rs.subjectId)} to choose privately.`));
-    } else if (rs.subType === 'binary') {
-      wrap.appendChild(h('div', { class: 'option-grid' }, [
-        h('button', { class: 'option-btn', onclick: () => crystalSubmitChoice(viewingAs, 'A') }, rs.optionA),
-        h('button', { class: 'option-btn', onclick: () => crystalSubmitChoice(viewingAs, 'B') }, rs.optionB)
-      ]));
-    } else if (rs.subType === 'number') {
-      const inp = h('input', { type: 'number', placeholder: `Between ${rs.min} and ${rs.max}` });
-      wrap.appendChild(h('div', { class: 'card raised' }, [
-        h('label', { class: 'field' }, [`Your honest number (${rs.min}–${rs.max})`, inp]),
-        h('div', { style: 'height:10px' }),
-        h('button', { class: 'primary', onclick: () => { if (inp.value !== '') crystalSubmitChoice(viewingAs, Number(inp.value)); } }, 'Submit')
-      ]));
-    } else {
-      wrap.appendChild(writeBox('Your honest one word.', (t) => crystalSubmitChoice(viewingAs, t)));
-    }
-  } else if (rs.phase === 'guessing') {
-    if (viewingAs === rs.subjectId) {
-      wrap.appendChild(waitingBlock(`Everyone else is guessing what you picked.`));
-    } else if (rs.pendingGuesses[viewingAs] !== undefined) {
-      wrap.appendChild(waitingBlock(`Guess locked in. Waiting on ${crystalEligibleGuessers().length - Object.keys(rs.pendingGuesses).length} more...`));
-    } else if (rs.subType === 'binary') {
-      wrap.appendChild(h('div', { class: 'option-grid' }, [
-        h('button', { class: 'option-btn', onclick: () => crystalSubmitGuess(viewingAs, 'A') }, rs.optionA),
-        h('button', { class: 'option-btn', onclick: () => crystalSubmitGuess(viewingAs, 'B') }, rs.optionB)
-      ]));
-    } else if (rs.subType === 'number') {
-      const inp = h('input', { type: 'number', placeholder: `Between ${rs.min} and ${rs.max}` });
-      wrap.appendChild(h('div', { class: 'card raised' }, [
-        h('label', { class: 'field' }, [`Your guess (${rs.min}–${rs.max})`, inp]),
-        h('div', { style: 'height:10px' }),
-        h('button', { class: 'primary', onclick: () => { if (inp.value !== '') crystalSubmitGuess(viewingAs, Number(inp.value)); } }, 'Submit')
-      ]));
-    } else {
-      wrap.appendChild(writeBox('Your guess.', (t) => crystalSubmitGuess(viewingAs, t)));
-    }
-  } else if (rs.phase === 'reveal') {
-    const actualLabel = rs.subType === 'binary' ? (rs.subjectChoice === 'A' ? rs.optionA : rs.optionB) : rs.subjectChoice;
-    wrap.appendChild(h('div', { class: 'card raised' }, [
-      h('span', { class: 'eyebrow' }, `${playerName(rs.subjectId)} actually picked`),
-      h('div', { class: 'prompt-text', style: 'margin-top:6px;' }, String(actualLabel))
-    ]));
-    const list = h('div', { class: 'player-list' });
-    Object.entries(rs.guesses).forEach(([pid, g]) => {
-      const label = rs.subType === 'binary' ? (g === 'A' ? rs.optionA : rs.optionB) : String(g);
-      list.appendChild(h('div', { class: 'player-row' }, [h('span', {}, playerName(pid)), h('span', {}, label)]));
-    });
-    wrap.appendChild(h('div', { class: 'card' }, list));
-    wrap.appendChild(h('button', { class: 'primary', onclick: crystalNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
-  }
-  return wrap;
-}
-
-// ---------------- Session end ----------------
-const ROUND_DISPLAY_NAMES = { rankingWars: 'Ranking Wars', secretOpinions: 'Secret Opinions', crystalBall: 'Crystal Ball' };
-
-function renderRoundSummary() {
-  const wrap = document.createDocumentFragment();
-  const summary = DB.session.lastRoundSummary;
-  wrap.appendChild(h('div', { class: 'eyebrow' }, 'Round complete'));
-  wrap.appendChild(h('h1', {}, ROUND_DISPLAY_NAMES[summary.roundType] || summary.roundType));
-  const list = h('div', { class: 'player-list' });
-  playerIds().slice().sort((a, b) => (summary.delta[b] || 0) - (summary.delta[a] || 0)).forEach(id => {
-    const d = summary.delta[id] || 0;
-    const sign = d > 0 ? '+' : '';
-    list.appendChild(h('div', { class: 'player-row' }, [
-      h('span', {}, playerName(id)),
-      h('span', {}, [
-        h('span', { class: d < 0 ? 'score-flash negative' : 'score-flash', style: 'padding:3px 9px;font-size:13px;margin-right:10px;display:inline-flex;' }, `${sign}${d}`),
-        h('span', { class: 'score' }, String(DB.scoreboard[id] || 0))
-      ])
-    ]));
-  });
-  wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'eyebrow' }, 'This round · running total'), list]));
-  wrap.appendChild(h('button', { class: 'primary', onclick: continueFromRoundSummary }, 'Continue'));
-  return wrap;
-}
-function renderSessionEnd() {
-  const wrap = document.createDocumentFragment();
-  wrap.appendChild(h('div', { class: 'eyebrow' }, 'Session complete'));
-  wrap.appendChild(h('h1', {}, 'Final scoreboard'));
-  const sorted = playerIds().slice().sort((a, b) => (DB.scoreboard[b] || 0) - (DB.scoreboard[a] || 0));
-  const list = h('div', { class: 'player-list' });
-  sorted.forEach((id, i) => {
-    list.appendChild(h('div', { class: 'player-row' }, [h('span', {}, `${i + 1}. ${playerName(id)}`), h('span', { class: 'score' }, String(DB.scoreboard[id] || 0))]));
-  });
-  wrap.appendChild(h('div', { class: 'card' }, list));
-  const hostView = viewingAs === DB.meta.hostId;
-  wrap.appendChild(h('button', {
-    class: 'primary', disabled: !hostView, onclick: () => {
-      transactionalCommit(() => {
-        const keptPlayers = DB.players; const hostId = DB.meta.hostId;
-        const fresh = freshDB();
-        fresh.players = keptPlayers; fresh.meta.hostId = hostId;
-        Object.keys(fresh.players).forEach(id => { fresh.scoreboard[id] = 0; });
-        DB = fresh;
-      });
-    }
-  }, hostView ? 'Start a new session' : 'Waiting for host to start a new session'));
-  return wrap;
-}
-
-render();
+</style>
+</head>
+<body>
+<div id="app" class="app"></div>
+<script id="content-data" type="application/json">{"rankingWars": {"standard": ["Best driver", "Biggest nerd", "Best cook", "Best dancer", "Best liar", "Best karaoke singer", "Best under pressure", "Best gift giver", "Best timekeeping", "Best team player", "Best multitasker", "Best at small talk", "Best navigator", "Best at DIY", "Best sense of direction", "Best at packing for a trip", "Best at handling bad news", "Best at taking a joke", "Best at giving directions", "Best public speaker", "Best at surviving a horror film", "Best at surviving a zombie apocalypse", "Worst loser", "Worst person to organise a stag/hen-do", "Best at handling a hangover", "Most reliable", "Best at handling criticism", "Most likely to cry at a film", "Most likely to throw a hissy fit", "Most likely to complain first", "Most likely to get lost", "Most likely to overreact to something small", "Most likely to win the lottery and lose the ticket", "Most likely to fall asleep first at a party", "Best problem solver", "Best at learning new skills", "Best at keeping a secret", "Best at talking their way out of trouble", "Best at reading a room", "Best at making friends", "Best at staying calm in a crisis", "Best at motivating other people", "Best person to have on a pub quiz team", "Best at spotting a bargain", "Best holiday planner", "Best at organising a group event", "Best at making people laugh", "Best at remembering names", "Best at negotiating", "Most likely to accidentally start an argument", "Most likely to forget where they parked", "Most likely to spend money on something ridiculous", "Most likely to lose their phone", "Most likely to leave something important behind on holiday", "Most likely to get distracted halfway through a task", "Most likely to miss a flight", "Most likely to accidentally reply-all", "Most likely to become internet famous for the wrong reason", "Most likely to get banned from somewhere", "Most likely to cause chaos on a night out", "Most likely to survive a zombie apocalypse by pure luck", "Most likely to believe a fake headline", "Most likely to join a pyramid scheme", "Most likely to forget an important birthday", "Most likely to make things worse while trying to help", "Most likely to accidentally start a cult", "Most likely to end up in a documentary", "Most likely to win a reality TV show", "Most likely to become Prime Minister", "Most likely to go viral", "Most likely to fake confidence and somehow succeed", "Most likely to have a Wikipedia page one day", "Most likely to survive entirely on takeaways", "Most likely to get locked out of their own house", "Worst passenger on a road trip", "Worst person to be stranded with", "Worst person to organise a holiday", "Worst person to trust with directions", "Worst person to lend money to", "Worst person to keep a surprise from", "Worst person to have as an escape room teammate", "Biggest loudmouth", "Calmest person", "Worst person to share a hotel room with", "Worst person to plan a night out", "Worst person to be responsible for the group chat", "Worst backseat driver", "Best at pretending they're fine", "Most likely to start a rumour by accident", "Best at spotting when someone's lying", "Worst person to babysit", "Most likely to talk their way into a free upgrade", "Best at recovering from embarrassment", "Most likely to fall for a prank", "Worst person to share a car playlist with", "Best at holding a grudge", "Most likely to cheat on a boardgame", "The worst flirt of the group", "Most charming", "Best dressed on a night out", "Most likely to have the best chat-up line", "Most likely to be swiped right on", "Best \"getting ready\" energy before a night out", "Most likely to be someone's crush", "Most likely to turn heads walking into a room"], "adult": ["The worst at sexual performance", "Most likely to have the most exes in the room", "Most likely to send a drunk text they regret", "Most likely to have a secret situationship right now", "Most likely to fake an orgasm", "Most likely to have the wildest sex story", "Most likely to overshare after a few drinks", "Most likely to meet up with someone after they text \"you up\" at 3am", "Most likely to be someone's rebound", "Most likely to have a threesome story", "Most likely to still have a dating app open", "Most likely to sleep with an ex again", "Most likely to lie about their body count", "Most likely to have a walk of shame story", "Most likely to hook up with someone in this room, given the chance", "Most likely to have a \"we don't talk about that night\" story", "Most likely to have hooked up with someone here without the group finding out", "Most likely to have a secret they'd take to the grave, relationship-wise", "Most likely to have the messiest ex situation", "Most likely to have cried after sex for no reason", "Most likely to have a situationship they can't explain to their mates", "Most likely to have sent a message meant for someone else", "Most likely to have a \"type\" they'd never admit to", "Most likely to go home with different people on consecutive nights", "Most likely to have gone back anyone, absolutely anyone", "Most likely to have faked being into something to keep someone interested", "Most likely to have a hookup story involving a bad excuse to leave", "Most likely to have dated two people at once", "Most likely to have a partner's ex slide into their DMs", "Most likely to still think about a situationship from years ago", "Who has the worst taste in partners", "Biggest shagger", "Who has the biggest mummy/daddy issues", "Best kisser", "Most likely to get a number without trying", "Biggest heartbreaker", "Biggest tease", "Most likely to have the best chat-up line", "Most likely to be swiped right on", "Best \"getting ready\" energy before a night out", "Most likely to have a type everyone in the room can guess correctly", "Most likely to catch someone's eye across a bar"]}, "secretOpinions": {"topicOpinion": ["What's a popular film everyone loves that you secretly think is overrated?", "What's a job you privately think is easier than people make out?", "What's a widely accepted parenting rule you secretly disagree with?", "What's a \"classic\" you've never actually enjoyed, but pretend to?", "What's a common opinion about your own generation that you privately agree with?", "What's a hobby you think people only do to look interesting?", "What's a popular holiday destination you think is genuinely overrated?", "What's something everyone insists tastes good that you secretly can't stand?", "What's a widely respected career you'd never actually want?", "What's a piece of common life advice you think is actually bad?", "What's a trait people compliment that you think is overrated as a virtue?", "What's something most people find romantic that you find a bit much?", "What's a rule at work you think exists for no good reason?", "What's a sport you think gets far more credit than it deserves?", "What's a type of person you find harder to trust than most people admit?", "What's a popular parenting trend you think will age badly?", "What's a widely loved musician or band you don't rate?", "What's a \"treat yourself\" purchase you think people are kidding themselves about?", "What's a social media habit you privately judge people for?", "What's a commonly praised personality type you actually find exhausting?", "What's something people brag about that you don't think is impressive?", "What's a popular diet or fitness trend you think is mostly nonsense?", "What's a widely accepted etiquette rule you think is outdated?", "What's a genre of film or TV everyone else loves that does nothing for you?", "What's a common relationship milestone you don't think matters as much as people say?", "What's a household chore other people stress about that you think is genuinely easy?", "What's something people apologise for constantly that doesn't need an apology?", "What's a widely respected historical figure you don't think deserves the reputation?", "What's a common excuse people give that you never believe?", "What's a popular tourist attraction you think is a waste of time?", "What's a popular app you think is a waste of time?", "What's a widely loved comedian you don't find funny?", "What's a common wedding tradition you think is pointless?", "What's a type of holiday other people rave about that you'd hate?", "What's a chore everyone complains about that you don't mind?", "What's a commonly praised skill you think is overrated?", "What's a popular restaurant chain you think is genuinely bad?", "What's a widely respected profession you think gets too much credit?", "What's a self-help concept you think is mostly nonsense?", "What's a common friendship rule you secretly ignore?", "What's a beloved children's film that doesn't hold up as an adult?", "What's a fitness trend you think does nothing?", "What's a popular clothing brand you think is overpriced for what it is?", "What's a common piece of workplace culture you think is fake?", "What's a widely used phrase you secretly find annoying?", "What's a type of celebrity you have no interest in?", "What's a common travel habit you think is unnecessary?", "What's a popular gadget you think people don't actually need?", "What's a commonly accepted social norm you privately break?", "What's a widely loved city you think is overrated as a destination?", "What's a common opinion about money you disagree with?", "What's a popular streaming show you never finished and don't care to?", "What's a type of small talk you actively dislike?", "What's a common gym habit you think is pointless?", "What's a widely respected award or title you don't think means much?", "What's a widely used piece of tech you refuse to use?", "What's a common excuse for being late that you think is always a lie?", "What's a popular book everyone raves about that you didn't rate?", "What's a type of gift you think is always a cop-out?", "What's a commonly praised work ethic you think is actually unhealthy?", "What's a popular subscription service you think is a con?", "What's a widely accepted dating rule you think is outdated?", "What's a common New Year's resolution you think is pointless?", "What's a type of party you'd rather not be invited to?", "What's a popular sport to watch that you find boring?", "What's a common household rule you secretly think is unnecessary?", "What's a widely loved dessert you think is overrated?", "What's a commonly respected hobby you think is actually a bit sad?", "What's a popular productivity trend you think is a waste of time?", "What's a type of humour you don't find funny, even though others do?", "What's a common relationship red flag you think people overreact to?", "What's a widely used excuse for cancelling plans that you never buy?", "What's a popular tourist \"must-do\" activity you'd happily skip?", "What's a common social media trend you think makes people look worse, not better?", "What's a type of person you think gets away with too much?", "What's a commonly accepted workplace perk you think is basically pointless?", "What's a popular pet you don't understand the appeal of?", "What's a widely respected life goal you don't actually want?", "What's a common piece of small talk small print you think everyone lies about?", "What's a type of celebration you think is more effort than it's worth?", "Who's your celebrity crush?", "Which celebrity do you dislike the most?", "What's the most overrated colour?"], "pickAPlayer": ["Who in this group would you bet on to have a secret Wikipedia rabbit hole they're embarrassed about?", "Who in this group would you least trust to remember your coffee order?", "Who in this group would you least trust to water your plants?", "Who in this group has the best legs?", "Who in this group do you think has the most hidden dark side?", "Who in this group would you least want to be stuck in a lift with?", "Who in this group do you think is secretly the most judgemental?", "Who in this group would crack first under police questioning?", "Who in this group do you think has told the biggest lie and gotten away with it?", "Who in this group would you bet on to end up famous for the wrong reasons?", "Who in this group do you think is the most likely to be hiding something right now?", "Who in this group would you least trust to look after your pet?", "Who in this group do you think has the messiest search history?", "Who in this group would you bet on to start an argument at a wedding?", "Who in this group do you think talks the most behind people's backs?", "Who in this group would you least want as your boss?", "Who in this group do you think has the biggest ego?", "Who in this group would you bet on to ghost someone without explanation?", "Who in this group would you least trust with your phone unlocked?", "Who in this group do you think has the most embarrassing skeleton in the closet?", "Who in this group would you bet on to fake being sick to get out of something?", "Who in this group do you think is the biggest hypocrite?", "Who in this group would you least want to negotiate against?", "Who in this group do you think would sell you out first for money?", "Who in this group would you bet on to have a secret second phone?", "Who in this group do you think is the most two-faced?", "Who in this group would you least trust to tell you the truth about your haircut?", "Who in this group do you think has the most convincing poker face?", "Who in this group would you bet on to lie their way out of a speeding ticket?", "Who in this group do you think would survive longest without their phone?", "Who in this group would you least trust to plan your surprise party without ruining it?", "Who in this group do you think has the most secrets nobody knows about?", "Who in this group has the least potential to make you laugh?", "Who in this group makes you laugh the most?", "Who in this group is the most beautiful?"]}, "crystalBall": {"binary": {"standard": [{"optionA": "Tea", "optionB": "coffee"}, {"optionA": "Save the money", "optionB": "spend it"}, {"optionA": "Early night", "optionB": "stay up late"}, {"optionA": "Beach holiday", "optionB": "city break"}, {"optionA": "Dogs", "optionB": "cats"}, {"optionA": "Sweet", "optionB": "savoury"}, {"optionA": "Window seat", "optionB": "aisle seat"}, {"optionA": "Text", "optionB": "call"}, {"optionA": "Mountains", "optionB": "sea"}, {"optionA": "Night out", "optionB": "night in"}, {"optionA": "Morning shower", "optionB": "evening shower"}, {"optionA": "Follow a recipe", "optionB": "wing it"}, {"optionA": "Big wedding", "optionB": "small wedding"}, {"optionA": "Pay off debt", "optionB": "invest for the future"}, {"optionA": "Netflix", "optionB": "cinema"}, {"optionA": "Camping", "optionB": "hotel"}, {"optionA": "Plan the trip", "optionB": "go with the flow"}, {"optionA": "Karaoke", "optionB": "dancefloor"}, {"optionA": "New car", "optionB": "older reliable one"}, {"optionA": "Football", "optionB": "rugby"}, {"optionA": "City living", "optionB": "countryside"}, {"optionA": "Physical book", "optionB": "e-reader"}, {"optionA": "Takeaway", "optionB": "home-cooked"}, {"optionA": "Gym in the morning", "optionB": "gym in the evening"}, {"optionA": "Big group holiday", "optionB": "just close friends"}, {"optionA": "Christmas", "optionB": "their own birthday"}, {"optionA": "Cold weather", "optionB": "hot weather"}, {"optionA": "Watch the football at home", "optionB": "in the pub"}, {"optionA": "Splurge on the outfit", "optionB": "save for later"}, {"optionA": "Drive", "optionB": "be driven"}, {"optionA": "Would they rather win the lottery tomorrow", "optionB": "find their dream job tomorrow"}, {"optionA": "Would they rather never eat their favourite food again", "optionB": "never watch their favourite film again"}, {"optionA": "Named after a family member,", "optionB": "given a completely original name"}, {"optionA": "Would they rather be famous for something embarrassing", "optionB": "never be famous at all"}, {"optionA": "Would they rather relive their favourite year", "optionB": "skip straight to their favourite age"}], "adult": [{"optionA": "One-night stand", "optionB": "one-night wank"}, {"optionA": "Lights on", "optionB": "lights off"}, {"optionA": "Boobs", "optionB": "bum"}, {"optionA": "Talk about their ex", "optionB": "avoid the topic entirely"}, {"optionA": "Morning", "optionB": "night, when are they in the mood most"}, {"optionA": "Would they rather be single for a year", "optionB": "in a bad relationship for a year"}, {"optionA": "Confidence", "optionB": "mystery, which wins them over more"}, {"optionA": "Would they rather have great chemistry", "optionB": "a great personality with no spark"}, {"optionA": "Long relationship", "optionB": "a string of short ones"}, {"optionA": "Would they rather date a much older", "optionB": "much younger person"}, {"optionA": "Public displays of affection", "optionB": "keep it private"}, {"optionA": "Would they rather their partner be too clingy", "optionB": "too distant"}, {"optionA": "First date at a restaurant", "optionB": "somewhere more unusual"}, {"optionA": "Would they rather text first", "optionB": "wait to be texted"}, {"optionA": "Long-distance relationship", "optionB": "nothing at all"}, {"optionA": "Would they rather their ex text them", "optionB": "never hear from them again"}, {"optionA": "Would they rather be the one who caught feelings first", "optionB": "second"}, {"optionA": "Would they rather have a messy breakup story", "optionB": "a boring one"}, {"optionA": "Would they rather kiss on the first date", "optionB": "wait"}, {"optionA": "Would they rather date a friend's ex", "optionB": "never date a friend's ex"}, {"optionA": "Would they rather have one great love", "optionB": "several good ones"}, {"optionA": "Would they rather have amazing chemistry with someone wrong for them,", "optionB": "nothing with someone right for them"}, {"optionA": "One wild night they'll never forget,", "optionB": "a slow-burn love story"}, {"optionA": "Would they rather their partner be jealous", "optionB": "completely unbothered"}, {"optionA": "Would they rather have a secret admirer", "optionB": "be someone's secret admirer"}, {"optionA": "Would they rather know their body count", "optionB": "never think about it again"}]}, "number": {"standard": [{"text": "How many countries has {Player} visited?", "min": 0, "max": 297}, {"text": "How many times has {Player} moved house?", "min": 0, "max": 15}, {"text": "How many hours of sleep does {Player} get on an average night?", "min": 3, "max": 10}, {"text": "How many close friends would {Player} say they have?", "min": 0, "max": 30}, {"text": "How many cups of tea or coffee does {Player} have on an average day?", "min": 0, "max": 10}, {"text": "What age did {Player} get their first phone?", "min": 3, "max": 18}, {"text": "How many jobs has {Player} had in total, including part-time and holiday jobs?", "min": 1, "max": 20}, {"text": "How many minutes does {Player} usually spend getting ready before going out?", "min": 1, "max": 150}, {"text": "How old was {Player} when they had their first proper kiss?", "min": 6, "max": 30}, {"text": "How many times has {Player} cried at a film?", "min": 0, "max": 200}, {"text": "What number would {Player} give their own cooking out of 10?", "min": 1, "max": 10}, {"text": "How many alarms does {Player} set to wake up?", "min": 0, "max": 20}, {"text": "How many minutes late is {Player} on average when meeting friends?", "min": 0, "max": 120}, {"text": "How many times has {Player} changed their hairstyle in the last five years?", "min": 0, "max": 50}, {"text": "How many hours a week does {Player} think they spend scrolling on their phone?", "min": 1, "max": 50}, {"text": "How many unread emails does {Player} currently have?", "min": 0, "max": 10000}, {"text": "How many pairs of shoes does {Player} own?", "min": 1, "max": 100}, {"text": "How many times has {Player} been on a plane in the last year?", "min": 0, "max": 40}, {"text": "What percentage of their phone battery does {Player} usually let it drop to before charging?", "min": 0, "max": 80}, {"text": "How many apps are on {Player}'s phone home screen?", "min": 1, "max": 40}, {"text": "How much does {Player} think they've spent on takeaways in the last month, in pounds?", "min": 0, "max": 500}, {"text": "How many times has {Player} changed career or job type entirely?", "min": 0, "max": 10}, {"text": "How old was {Player} when they moved out of their family home?", "min": 16, "max": 40}, {"text": "How many times has {Player} been on stage or performed in front of an audience?", "min": 0, "max": 200}, {"text": "How many hours does {Player} think they spend on the toilet scrolling their phone per week?", "min": 0, "max": 20}], "adult": [{"text": "How old was {Player} when they lost their virginity?", "min": 14, "max": 30}, {"text": "How many exes does {Player} still follow on social media?", "min": 0, "max": 20}, {"text": "How many people has {Player} ghosted?", "min": 0, "max": 100}, {"text": "How many times has {Player} been ghosted?", "min": 0, "max": 100}, {"text": "How many people has {Player} matched with on dating apps in total?", "min": 0, "max": 1000}, {"text": "How many first dates has {Player} been on in the last year?", "min": 0, "max": 50}, {"text": "How old was {Player} when they had their first proper boyfriend or girlfriend?", "min": 8, "max": 30}, {"text": "How many times has {Player} said \"I love you\" first in a relationship?", "min": 0, "max": 20}, {"text": "How many relationships has {Player} had that lasted over a year?", "min": 0, "max": 15}, {"text": "How many times has {Player} stalked an ex's social media in the last month?", "min": 0, "max": 50}, {"text": "How old was {Player} the first time they went on a proper date?", "min": 10, "max": 30}, {"text": "How many people has {Player} been on a date with that they never saw again?", "min": 0, "max": 50}, {"text": "How many times has {Player} pretended to like a partner's friend group?", "min": 0, "max": 20}, {"text": "How many relationships has {Player} had where they were the one to end it?", "min": 0, "max": 15}, {"text": "How old was {Player} when they had their first proper crush?", "min": 5, "max": 25}, {"text": "What's {Player}'s body count, roughly?", "min": 0, "max": 50}, {"text": "How many people has {Player} been intimate with in a single year, at most?", "min": 0, "max": 50}, {"text": "How old was {Player} the first time they stayed the night at someone's place they'd just met?", "min": 16, "max": 35}, {"text": "How many times has {Player} had a one-night stand?", "min": 0, "max": 50}, {"text": "How many people has {Player} been intimate with without knowing their surname?", "min": 0, "max": 10}]}, "singleWord": {"standard": ["If {Player} had to describe their week in one word, what would it be?", "What's the first word {Player} would use to describe their own cooking?", "What one word would {Player}'s closest friend use to describe them?", "What's {Player}'s go-to word when something goes wrong?", "In one word, what's {Player} most proud of this year?", "What one word would {Player} use to describe their taste in music?", "What's the one word {Player} would use to sum up their job?", "In one word, how would {Player} describe their driving?", "What's the first word that comes to mind when {Player} thinks of Mondays?", "In one word, how would {Player} describe their fashion sense?", "What's the one word {Player} would use to describe their family?", "If {Player} had to sum up their love life in one word, what would it be?", "What's the first word {Player} thinks of when they hear \"Monday morning\"?", "What one word would {Player} use to describe their handwriting?", "In one word, how would {Player} describe their sleep schedule?", "What's the one word {Player} would use to describe their spending habits?", "If {Player} had to pick one word for their sense of humour, what would it be?", "What one word would {Player}'s parents use to describe them as a child?", "In one word, how would {Player} describe their patience levels?", "What's the first word {Player} would use for their own singing voice?", "What's the one word {Player} would use to describe their childhood?", "In one word, how would {Player} describe their relationship with money?", "What's the first word {Player} would use for their own decision-making?", "In one word, how would {Player} describe their friendship group?", "What one word would {Player} use to sum up the last year of their life?"], "adult": ["In one word, how would {Player} describe their ex?", "What one word would {Player} use to describe their love life right now?", "In one word, what's {Player}'s biggest turn-off?", "What's the one word {Player} would use to describe their flirting style?", "In one word, how would {Player} describe their type?", "What's the one word {Player} would use to describe their ideal partner?", "In one word, how would {Player} describe their confidence when flirting?", "What's {Player}'s go-to word to describe a bad date?", "In one word, what's {Player} most attracted to in someone?", "What one word would {Player} use to describe their dating history?", "In one word, how would {Player} describe their communication style in relationships?", "What's the first word {Player} thinks of when they hear their ex's name?", "In one word, how would {Player} describe their ideal first date?", "What one word would {Player} use to sum up their last relationship?", "In one word, what's {Player}'s biggest turn-on?", "What's the one word {Player} would use to describe jealousy in a relationship?", "In one word, how would {Player} describe their texting habits with a crush?", "What one word sums up {Player}'s approach to breakups?", "In one word, how would {Player} describe commitment?", "What's the first word {Player} would use for their own love life right now?", "In one word, what's {Player}'s biggest kink?", "What's the one word {Player} would use to describe their best night with someone?", "In one word, how would {Player} describe their body count?", "What one word sums up {Player}'s wildest hookup story?", "In one word, what's {Player} into that might surprise people?"]}}}</script>
+<script type="module" src="game.js"></script>
+</body>
+</html>
