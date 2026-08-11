@@ -104,6 +104,22 @@ function normalizeRoundState() {
     rs.pendingFieldAnswers = rs.pendingFieldAnswers || {};
     rs.readerAssignment = rs.readerAssignment || {};
     rs.votes = rs.votes || {};
+    // Same empty-value stripping applies inside each story's fields array
+    // (Firebase treats a null array entry as "delete this index", so a
+    // run of not-yet-filled placeholders can vanish, and a partially
+    // filled array can even come back as a plain object with numeric
+    // keys instead of a real array). Rebuild each story's fields as a
+    // proper dense array, keeping anything that's actually there.
+    if (rs.stories) {
+      Object.values(rs.stories).forEach(story => {
+        const existing = story.fields || {};
+        const restored = [];
+        for (let i = 0; i < FIELD_SEQUENCE.length; i++) {
+          restored.push(existing[i] !== undefined ? existing[i] : false);
+        }
+        story.fields = restored;
+      });
+    }
   } else if (rs.type === 'splitTheRoom') {
     rs.votes = rs.votes || {};
     rs.usedStandard = rs.usedStandard || [];
@@ -329,7 +345,7 @@ function startStoryRound() {
   const order = shuffle(playerIds());
   const n = order.length;
   const stories = {};
-  order.forEach((pid, i) => { stories['story_' + i] = { ownerId: pid, fields: new Array(FIELD_SEQUENCE.length).fill(null) }; });
+  order.forEach((pid, i) => { stories['story_' + i] = { ownerId: pid, fields: new Array(FIELD_SEQUENCE.length).fill(false) }; });
   DB.roundState = {
     type: 'storyRound',
     playerOrder: order,
