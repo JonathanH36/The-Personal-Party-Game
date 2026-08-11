@@ -83,6 +83,32 @@ function normalizeDB() {
   DB.players = DB.players || {};
   DB.scoreboard = DB.scoreboard || {};
   DB.session = DB.session || { roundOrder: [], currentRoundIndex: -1, currentRound: null };
+  normalizeRoundState();
+}
+
+// Firebase drops empty objects/arrays entirely rather than storing them as
+// {} or [], so any collection that starts empty (nobody's answered/voted
+// yet) comes back as `undefined` on every OTHER client's snapshot, not {}.
+// Every round keeps at least one such collection, so this has to run for
+// whichever round type is currently active, every time a snapshot lands.
+function normalizeRoundState() {
+  const rs = DB.roundState;
+  if (!rs) return;
+  if (rs.type === 'truthComesOut') {
+    rs.pendingAnswers = rs.pendingAnswers || {};
+    rs.answers = rs.answers || {};
+    rs.votes = rs.votes || {};
+    rs.usedQuestionIds = rs.usedQuestionIds || [];
+    rs.shuffledOrder = rs.shuffledOrder || [];
+  } else if (rs.type === 'storyRound') {
+    rs.pendingFieldAnswers = rs.pendingFieldAnswers || {};
+    rs.readerAssignment = rs.readerAssignment || {};
+    rs.votes = rs.votes || {};
+  } else if (rs.type === 'splitTheRoom') {
+    rs.votes = rs.votes || {};
+    rs.usedStandard = rs.usedStandard || [];
+    rs.usedH2H = rs.usedH2H || [];
+  }
 }
 
 async function commit() {
@@ -358,8 +384,6 @@ function startSplitTheRoom() {
   commit();
 }
 function splitEligiblePlayers() {
-  const rs = DB.roundState;
-  if (rs.mode === 'headToHead') return playerIds().filter(id => id !== rs.current.playerA && id !== rs.current.playerB);
   return playerIds();
 }
 function splitStartInstance() {
@@ -377,9 +401,9 @@ function splitStartInstance() {
     const [pA, pB] = sample(playerIds(), 2);
     rs.current = { traitText: trait, playerA: pA, playerB: pB };
   } else {
-    const pool = CONTENT.splitTheRoom.standard.filter(q => !rs.usedStandard.includes(q));
+    const pool = CONTENT.splitTheRoom.standard.filter(q => !rs.usedStandard.includes(q.optionA + '|' + q.optionB));
     const q = pool.length ? pick(pool) : pick(CONTENT.splitTheRoom.standard);
-    rs.usedStandard.push(q);
+    rs.usedStandard.push(q.optionA + '|' + q.optionB);
     rs.current = { optionA: q.optionA, optionB: q.optionB, promptSuffix: q.promptSuffix };
   }
 }
@@ -723,9 +747,6 @@ function renderSplitTheRoom() {
   const wrap = document.createDocumentFragment();
   wrap.appendChild(roundBanner('Split the Room' + (rs.mode === 'headToHead' ? ' · Head to head' : ''), `Round ${rs.instanceIndex + 1} / ${rs.totalInstances}`));
 
-  const eligible = splitEligiblePlayers();
-  const isNamed = rs.mode === 'headToHead' && (viewingAs === rs.current.playerA || viewingAs === rs.current.playerB);
-
   const promptCard = h('div', { class: 'card' });
   if (rs.mode === 'standard') {
     promptCard.appendChild(h('div', { class: 'prompt-text' }, `${rs.current.optionA} vs ${rs.current.optionB}, ${rs.current.promptSuffix}`));
@@ -735,10 +756,8 @@ function renderSplitTheRoom() {
   wrap.appendChild(promptCard);
 
   if (rs.phase === 'voting') {
-    if (isNamed) {
-      wrap.appendChild(waitingBlock(`You're one of the two on trial this round — sit back and see how it lands.`));
-    } else if (rs.votes[viewingAs] !== undefined) {
-      wrap.appendChild(waitingBlock(`Vote locked in. Waiting on ${eligible.length - Object.keys(rs.votes).length} more...`));
+    if (rs.votes[viewingAs] !== undefined) {
+      wrap.appendChild(waitingBlock(`Vote locked in. Waiting on ${playerIds().length - Object.keys(rs.votes).length} more...`));
     } else {
       const grid = h('div', { class: 'option-grid' });
       const labelA = rs.mode === 'standard' ? rs.current.optionA : playerName(rs.current.playerA);
