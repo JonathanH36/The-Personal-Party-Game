@@ -32,7 +32,6 @@ const _authReady = new Promise((resolve) => {
 const CONTENT = JSON.parse(document.getElementById('content-data').textContent);
 const ROUND_TYPES = ['sayAnything', 'triviaBluff', 'imposter'];
 const TRIVIABLUFF_CATEGORY_OPTIONS = 4;
-const IMPOSTER_CLUE_ROUNDS = 2;
 const SAYANYTHING_INSTANCES = 3;
 const TRIVIABLUFF_INSTANCES = 5;
 const IMPOSTER_INSTANCES = 2;
@@ -104,9 +103,6 @@ function normalizeRoundState() {
     rs.shuffledOptions = rs.shuffledOptions || [];
     rs.usedQuestionIds = rs.usedQuestionIds || [];
   } else if (rs.type === 'imposter') {
-    rs.clues = rs.clues || { 1: {}, 2: {} };
-    rs.clues[1] = rs.clues[1] || {};
-    rs.clues[2] = rs.clues[2] || {};
     rs.votes = rs.votes || {};
     rs.usedCelebIds = rs.usedCelebIds || [];
   }
@@ -460,10 +456,13 @@ function triviaBluffNext() {
 // ROUND - Imposter
 // 2 instances per session, 4 to 12 players. Engine picks a
 // celebrity/historical figure vs a real lobby player randomly each
-// instance. One player is the imposter and sees only a vague
-// category hint, everyone else sees the real subject. Two rounds of
-// one-word clues, then everyone votes (no self-votes). Confirmed
-// scoring:
+// instance. One player is the imposter and sees only the word
+// "IMPOSTER", no hint of any kind. A random starting player is
+// marked so the group knows who kicks off the verbal clue-giving
+// (passing to their left in real life, entirely off-app: no clue
+// text, no per-player turn tracking, no timer). The host alone
+// decides when the group is ready and taps through to voting,
+// however many times round the table that took. Confirmed scoring:
 //   - correct accuser (voted for the real imposter):          +1
 //   - wrong accuser (voted for an innocent player):            -1
 //   - the imposter, per player who correctly accused them:     -1 each
@@ -483,11 +482,9 @@ function startImposter() {
     usedCelebIds: [],
     phase: 'clues',
     imposterId: null,
+    starterId: null,
     subjectMode: null,
     subjectName: null,
-    categoryHint: null,
-    clueRound: 1,
-    clues: { 1: {}, 2: {} },
     votes: {}
   };
   imposterStartInstance();
@@ -496,47 +493,42 @@ function imposterStartInstance() {
   const rs = DB.roundState;
   const ids = playerIds();
   const imposterId = pick(ids);
+  const starterId = pick(ids); // could be the imposter, purely random
   const subjectMode = Math.random() < 0.5 ? 'celebrity' : 'player';
 
-  let subjectName, categoryHint;
+  let subjectName;
   if (subjectMode === 'celebrity' || ids.length < 2) {
     const pool = imposterPool();
     const remaining = pool.filter(c => !rs.usedCelebIds.includes(c.id));
     const chosen = remaining.length ? pick(remaining) : pick(pool);
     rs.usedCelebIds.push(chosen.id);
     subjectName = chosen.name;
-    categoryHint = chosen.category;
     rs.subjectMode = 'celebrity';
   } else {
     const candidates = ids.filter(id => id !== imposterId);
     subjectName = playerName(pick(candidates));
-    categoryHint = 'Someone in this group';
     rs.subjectMode = 'player';
   }
 
   rs.imposterId = imposterId;
+  rs.starterId = starterId;
   rs.subjectName = subjectName;
-  rs.categoryHint = categoryHint;
-  rs.clueRound = 1;
-  rs.clues = { 1: {}, 2: {} };
   rs.votes = {};
   rs.phase = 'clues';
 }
 function imposterViewFor(playerId) {
   const rs = DB.roundState;
-  if (playerId === rs.imposterId) return { hint: rs.categoryHint };
+  if (playerId === rs.imposterId) return { isImposter: true };
   return { name: rs.subjectName };
 }
-function imposterSubmitClue(playerId, word) {
-  if (!word.trim()) return;
+// Host-only: ends the verbal clue-giving, however many passes round
+// the table it took, and moves everyone on to voting.
+function imposterStartVoting(playerId) {
+  if (playerId !== DB.meta.hostId) return; // host only
   transactionalCommit(() => {
     const rs = DB.roundState;
     if (rs.phase !== 'clues') return; // phase already moved on, a late click, ignore
-    rs.clues[rs.clueRound][playerId] = word.trim().split(/\s+/)[0]; // enforce one word
-    if (Object.keys(rs.clues[rs.clueRound]).length >= playerIds().length) {
-      if (rs.clueRound < IMPOSTER_CLUE_ROUNDS) rs.clueRound++;
-      else rs.phase = 'voting';
-    }
+    rs.phase = 'voting';
   });
 }
 function imposterSubmitVote(voterId, suspectId) {
@@ -855,15 +847,20 @@ function renderImposter() {
   const view = imposterViewFor(viewingAs);
   wrap.appendChild(h('div', { class: 'card raised' }, [
     h('span', { class: 'eyebrow' }, view.name ? 'Subject' : 'You are the imposter'),
-    h('div', { class: 'prompt-text' }, view.name ? view.name : `Category hint: ${view.hint}`)
+    h('div', { class: 'prompt-text' }, view.name ? view.name : 'IMPOSTER')
   ]));
 
   if (rs.phase === 'clues') {
-    wrap.appendChild(h('p', { class: 'muted' }, `Clue round ${rs.clueRound} / ${IMPOSTER_CLUE_ROUNDS}. One word only.`));
-    if (rs.clues[rs.clueRound][viewingAs] !== undefined) {
-      wrap.appendChild(waitingBlock(`Clue locked in. Waiting on ${playerIds().length - Object.keys(rs.clues[rs.clueRound]).length} more player(s)...`));
+    if (viewingAs === rs.starterId) {
+      wrap.appendChild(h('div', { class: 'score-flash' }, `You start! Say something about them out loud, then pass to your left.`));
     } else {
-      wrap.appendChild(writeBox('Your one-word clue.', (t) => imposterSubmitClue(viewingAs, t)));
+      wrap.appendChild(h('p', { class: 'muted' }, `${playerName(rs.starterId)} starts. Take it in turns saying something about them out loud, going round to the left.`));
+    }
+    const hostView = viewingAs === DB.meta.hostId;
+    if (hostView) {
+      wrap.appendChild(h('button', { class: 'primary', onclick: () => imposterStartVoting(viewingAs) }, 'Everyone ready: start voting'));
+    } else {
+      wrap.appendChild(waitingBlock(`Waiting for ${playerName(DB.meta.hostId)} to open voting.`));
     }
   } else if (rs.phase === 'voting') {
     if (rs.votes[viewingAs] !== undefined) {
