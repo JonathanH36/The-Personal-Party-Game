@@ -135,16 +135,26 @@ async function transactionalCommit(mutatorFn) {
   if (!ROOM_CODE) return;
   const lobbyRef = ref(rtdb, 'lobbies/' + ROOM_CODE);
   try {
-    await runTransaction(lobbyRef, (currentDB) => {
+    const result = await runTransaction(lobbyRef, (currentDB) => {
       if (currentDB === null) return currentDB;   // room not created yet server-side, abort quietly
       const savedDB = DB;
       DB = currentDB;
       normalizeDB();
       mutatorFn();
-      const result = DB;
+      const out = DB;
       DB = savedDB;
-      return result;
+      return out;
     });
+    // Don't wait on the separate onValue round-trip to find out our own
+    // write succeeded — paint the confirmed result immediately. On a slow
+    // connection, relying only on onValue left a gap where the submitting
+    // player's own screen looked frozen even though the write had gone
+    // through fine.
+    if (result && result.committed && result.snapshot) {
+      DB = result.snapshot.val() || DB;
+      normalizeDB();
+      render();
+    }
   } catch (e) { console.error('Firebase transaction failed:', e); }
 }
 
@@ -265,6 +275,7 @@ function truthSubmitAnswer(playerId, text) {
   if (!text.trim()) return;
   transactionalCommit(() => {
     const rs = DB.roundState;
+    if (rs.phase !== 'writing') return;   // phase already moved on — a late click, ignore
     rs.pendingAnswers[playerId] = text.trim();
     if (Object.keys(rs.pendingAnswers).length >= playerIds().length) truthAdvanceToVoting();
   });
@@ -275,6 +286,7 @@ function truthAdvanceToVoting() {
   Object.entries(rs.pendingAnswers).forEach(([pid, text]) => {
     rs.answers[uid('slot')] = { authorId: pid, text };
   });
+  rs.pendingAnswers = {};
   rs.shuffledOrder = shuffle(Object.keys(rs.answers));
   rs.phase = 'voting';
 }
@@ -282,6 +294,7 @@ function truthEligibleVoters() { return playerIds().filter(id => id !== DB.round
 function truthSubmitVote(playerId, slotId) {
   transactionalCommit(() => {
     const rs = DB.roundState;
+    if (rs.phase !== 'voting') return;   // phase already moved on — a late click, ignore
     rs.votes[playerId] = slotId;
     if (Object.keys(rs.votes).length >= truthEligibleVoters().length) truthReveal();
   });
@@ -290,13 +303,15 @@ function truthReveal() {
   const rs = DB.roundState;
   rs.phase = 'reveal';
   const correctSlot = Object.entries(rs.answers).find(([id, a]) => a.authorId === rs.subjectId)[0];
-  let anyoneCorrect = false;
+  let correctCount = 0;
+  let fooledCount = 0;
   Object.entries(rs.votes).forEach(([voterId, slotId]) => {
-    if (slotId === correctSlot) { addScore(voterId, 1); anyoneCorrect = true; }
+    if (slotId === correctSlot) { addScore(voterId, 1); correctCount++; }
+    else { addScore(rs.subjectId, 0.5); fooledCount++; }
   });
-  if (!anyoneCorrect) addScore(rs.subjectId, 1);
   rs.correctSlot = correctSlot;
-  rs.anyoneCorrect = anyoneCorrect;
+  rs.anyoneCorrect = correctCount > 0;
+  rs.fooledCount = fooledCount;
 }
 function truthNext() {
   transactionalCommit(() => {
@@ -332,6 +347,7 @@ function storySubmitField(playerId, text) {
   if (!text.trim()) return;
   transactionalCommit(() => {
     const rs = DB.roundState;
+    if (rs.phase !== 'writing') return;   // phase already moved on — a late click, ignore
     rs.pendingFieldAnswers[playerId] = text.trim();
     if (Object.keys(rs.pendingFieldAnswers).length >= rs.playerOrder.length) storyCommitPass();
   });
@@ -368,6 +384,7 @@ function storyNextRead() {
 function storySubmitVote(playerId, storyKey) {
   transactionalCommit(() => {
     const rs = DB.roundState;
+    if (rs.phase !== 'voting') return;   // phase already moved on — a late click, ignore
     rs.votes[playerId] = storyKey;
     if (Object.keys(rs.votes).length >= rs.playerOrder.length) storyReveal();
   });
@@ -445,6 +462,7 @@ function splitStartInstance() {
 function splitSubmitVote(playerId, choice) {
   transactionalCommit(() => {
     const rs = DB.roundState;
+    if (rs.phase !== 'voting') return;   // phase already moved on — a late click, ignore
     rs.votes[playerId] = choice;
     if (Object.keys(rs.votes).length >= splitEligiblePlayers().length) splitReveal();
   });
@@ -694,9 +712,10 @@ function renderTruthComesOut() {
       ]));
     });
     wrap.appendChild(grid);
-    wrap.appendChild(rs.anyoneCorrect
-      ? h('div', { class: 'score-flash' }, `+1 to everyone who found ${playerName(rs.subjectId)}'s real answer.`)
-      : h('div', { class: 'score-flash' }, `Nobody spotted it — +1 to ${playerName(rs.subjectId)} for a clean deception.`));
+    const scoreLines = [];
+    if (rs.anyoneCorrect) scoreLines.push(h('div', { class: 'score-flash' }, `+1 to everyone who found ${playerName(rs.subjectId)}'s real answer.`));
+    if (rs.fooledCount > 0) scoreLines.push(h('div', { class: 'score-flash' }, `+${rs.fooledCount * 0.5} to ${playerName(rs.subjectId)} — half a point for each of the ${rs.fooledCount} player${rs.fooledCount === 1 ? '' : 's'} fooled.`));
+    scoreLines.forEach(l => wrap.appendChild(l));
     wrap.appendChild(h('button', { class: 'primary', onclick: truthNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
   }
   wrap.appendChild(scoreboardMini());
