@@ -352,13 +352,21 @@ function truthReveal() {
   const correctSlot = Object.entries(rs.answers).find(([id, a]) => a.authorId === rs.subjectId)[0];
   let correctCount = 0;
   let fooledCount = 0;
+  const fakeFoolCounts = {};   // fake-answer author -> how many people their fake fooled
   Object.entries(rs.votes).forEach(([voterId, slotId]) => {
     if (slotId === correctSlot) { addScore(voterId, 1); correctCount++; }
-    else { addScore(rs.subjectId, 0.5); fooledCount++; }
+    else {
+      addScore(rs.subjectId, 0.5);
+      const fakeAuthorId = rs.answers[slotId].authorId;
+      addScore(fakeAuthorId, 0.5);
+      fakeFoolCounts[fakeAuthorId] = (fakeFoolCounts[fakeAuthorId] || 0) + 1;
+      fooledCount++;
+    }
   });
   rs.correctSlot = correctSlot;
   rs.anyoneCorrect = correctCount > 0;
   rs.fooledCount = fooledCount;
+  rs.fakeFoolCounts = fakeFoolCounts;
 }
 function truthNext() {
   transactionalCommit(() => {
@@ -456,8 +464,8 @@ function storyFieldText(story, index) {
   return f ? f.value : '____';
 }
 function storyFullText(story) {
-  return `${storyFieldText(story, 0)} met ${storyFieldText(story, 1)} ${storyFieldText(story, 2)}. `
-    + `He said: "${storyFieldText(story, 3)}" She said: "${storyFieldText(story, 4)}" `
+  return `${storyFieldText(story, 0)} met ${storyFieldText(story, 1)} at ${storyFieldText(story, 2)}. `
+    + `He said: "${storyFieldText(story, 3)}." She said: "${storyFieldText(story, 4)}." `
     + `In ten years, they'll be ${storyFieldText(story, 5)}.`;
 }
 
@@ -735,7 +743,7 @@ function renderTruthComesOut() {
   } else if (rs.phase === 'voting') {
     const eligible = truthEligibleVoters();
     if (viewingAs === rs.subjectId) {
-      wrap.appendChild(waitingBlock(`Sit tight — everyone else is voting on which answer is really yours.`));
+      wrap.appendChild(waitingBlock(`Sit tight: everyone else is voting on which answer is really yours.`));
     } else if (rs.votes[viewingAs] !== undefined) {
       wrap.appendChild(waitingBlock(`Vote locked in. Waiting on ${eligible.length - Object.keys(rs.votes).length} more voter(s)...`));
     } else {
@@ -756,13 +764,16 @@ function renderTruthComesOut() {
       const cls = 'answer-slot' + (slotId === rs.correctSlot ? ' correct' : '');
       grid.appendChild(h('div', { class: cls }, [
         a.text,
-        h('div', { class: 'author' }, `Written by ${playerName(a.authorId)}${slotId === rs.correctSlot ? ' — the real answer' : ''} · ${votesFor} vote${votesFor === 1 ? '' : 's'}`)
+        h('div', { class: 'author' }, `Written by ${playerName(a.authorId)}${slotId === rs.correctSlot ? ': the real answer' : ''} · ${votesFor} vote${votesFor === 1 ? '' : 's'}`)
       ]));
     });
     wrap.appendChild(grid);
     const scoreLines = [];
     if (rs.anyoneCorrect) scoreLines.push(h('div', { class: 'score-flash' }, `+1 to everyone who found ${playerName(rs.subjectId)}'s real answer.`));
-    if (rs.fooledCount > 0) scoreLines.push(h('div', { class: 'score-flash' }, `+${rs.fooledCount * 0.5} to ${playerName(rs.subjectId)} — half a point for each of the ${rs.fooledCount} player${rs.fooledCount === 1 ? '' : 's'} fooled.`));
+    if (rs.fooledCount > 0) scoreLines.push(h('div', { class: 'score-flash' }, `+${rs.fooledCount * 0.5} to ${playerName(rs.subjectId)}: half a point for each of the ${rs.fooledCount} player${rs.fooledCount === 1 ? '' : 's'} fooled.`));
+    Object.entries(rs.fakeFoolCounts || {}).forEach(([authorId, count]) => {
+      scoreLines.push(h('div', { class: 'score-flash' }, `+${count * 0.5} to ${playerName(authorId)}: their fake answer fooled ${count} player${count === 1 ? '' : 's'}.`));
+    });
     scoreLines.forEach(l => wrap.appendChild(l));
     wrap.appendChild(h('button', { class: 'primary', onclick: truthNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
   }
@@ -790,9 +801,6 @@ function renderStoryRound() {
 
   if (rs.phase === 'writing') {
     const field = FIELD_SEQUENCE[rs.passIndex];
-    const strip = h('div', { class: 'field-strip' });
-    FIELD_SEQUENCE.forEach((f, i) => strip.appendChild(h('span', { class: 'field-chip' + (i < rs.passIndex ? ' done' : i === rs.passIndex ? ' current' : '') }, f.key)));
-    wrap.appendChild(strip);
     const n = rs.playerOrder.length;
     const myIndex = rs.playerOrder.indexOf(viewingAs);
     const myStory = myIndex >= 0 ? 'story_' + storyStoryIndexFor(myIndex, rs.passIndex, n) : null;
@@ -812,7 +820,7 @@ function renderStoryRound() {
       h('div', { class: 'story-read', style: 'margin-top:8px;' }, storyFullText(story))
     ]));
     wrap.appendChild(h('p', { class: 'muted' }, `Story ${rs.currentReadIndex + 1} of ${keys.length}. Once it's been read out loud, move on.`));
-    wrap.appendChild(h('button', { class: 'primary', onclick: storyNextRead }, rs.currentReadIndex + 1 >= keys.length ? 'All read — start voting' : 'Next story'));
+    wrap.appendChild(h('button', { class: 'primary', onclick: storyNextRead }, rs.currentReadIndex + 1 >= keys.length ? 'All read: start voting' : 'Next story'));
   } else if (rs.phase === 'voting') {
     if (rs.votes[viewingAs] !== undefined) {
       wrap.appendChild(waitingBlock(`Vote locked in. Waiting on ${rs.playerOrder.length - Object.keys(rs.votes).length} more...`));
@@ -830,7 +838,7 @@ function renderStoryRound() {
   } else if (rs.phase === 'reveal') {
     rs.winners.forEach(key => {
       wrap.appendChild(h('div', { class: 'card raised' }, [
-        h('span', { class: 'eyebrow' }, `Winner — read by ${playerName(rs.readerAssignment[key])} · ${rs.tally[key]} vote${rs.tally[key] === 1 ? '' : 's'}`),
+        h('span', { class: 'eyebrow' }, `Winner, read by ${playerName(rs.readerAssignment[key])} · ${rs.tally[key]} vote${rs.tally[key] === 1 ? '' : 's'}`),
         h('div', { class: 'story-read', style: 'margin-top:8px;' }, storyFullText(rs.stories[key]))
       ]));
     });
@@ -881,14 +889,14 @@ function renderSplitTheRoom() {
     ]));
     if (rs.mode === 'standard') {
       if (rs.tally.A === rs.tally.B) {
-        wrap.appendChild(h('div', { class: 'score-flash negative' }, `Dead split — everyone loses a point.`));
+        wrap.appendChild(h('div', { class: 'score-flash negative' }, `Dead split: everyone loses a point.`));
       } else {
         const majLabel = rs.tally.A > rs.tally.B ? labelA : labelB;
         wrap.appendChild(h('div', { class: 'score-flash' }, `+1 to everyone who backed "${majLabel}".`));
       }
     } else {
       if (rs.tally.A === rs.tally.B) {
-        wrap.appendChild(h('div', { class: 'score-flash' }, `Tied — ${playerName(rs.current.playerA)} and ${playerName(rs.current.playerB)} split half a point each.`));
+        wrap.appendChild(h('div', { class: 'score-flash' }, `Tied: ${playerName(rs.current.playerA)} and ${playerName(rs.current.playerB)} split half a point each.`));
       } else {
         const winnerId = rs.tally.A > rs.tally.B ? rs.current.playerA : rs.current.playerB;
         wrap.appendChild(h('div', { class: 'score-flash' }, `+1 to ${playerName(winnerId)} for winning the majority, plus everyone who backed them.`));
