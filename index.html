@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Truth Comes Out — Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#12111a;
+  --panel:#1c1a29;
+  --panel-raised:#252236;
+  --coral:#ff5d6c;
+  --gold:#ffc857;
+  --mint:#5ee6c4;
+  --violet:#8d7bf0;
+  --paper:#f3efe6;
+  --line: rgba(243,239,230,0.12);
+  --text: #f3efe6;
+  --text-dim: rgba(243,239,230,0.62);
+  --radius: 18px;
+  --radius-sm: 10px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background: radial-gradient(120% 140% at 15% -10%, #241f3a 0%, var(--ink) 45%), var(--ink);
+  color: var(--text);
+  font-family:'Space Grotesk', system-ui, sans-serif;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{
+  font-family:'Fraunces', Georgia, serif;
+  font-weight:700;
+  margin:0 0 6px;
+  letter-spacing:-0.01em;
+}
+.app{
+  max-width:480px;
+  margin:0 auto;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  position:relative;
+  padding-bottom: 90px;
+}
+/* device switcher — the signature element: a row of phone "badges" you tap to become that player */
+.device-bar{
+  position:sticky; top:0; z-index:50;
+  background: rgba(18,17,26,0.92);
+  backdrop-filter: blur(10px);
+  border-bottom:1px solid var(--line);
+  padding:10px 14px 8px;
+}
+.device-bar-label{
+  font-size:11px; text-transform:uppercase; letter-spacing:0.12em;
+  color: var(--text-dim); margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;
+}
+.device-strip{
+  display:flex; gap:8px; overflow-x:auto; padding-bottom:2px;
+  scrollbar-width:none;
+}
+.device-strip::-webkit-scrollbar{display:none;}
+.device-chip{
+  flex:0 0 auto;
+  display:flex; align-items:center; gap:6px;
+  background: var(--panel);
+  border:1px solid var(--line);
+  border-radius: 999px;
+  padding:7px 12px 7px 8px;
+  font-size:13px; font-weight:600;
+  color: var(--text-dim);
+  cursor:pointer;
+  white-space:nowrap;
+  transition: all .15s ease;
+}
+.device-chip .dot{width:8px;height:8px;border-radius:50%;background:var(--text-dim);}
+.device-chip.active{
+  background: var(--coral);
+  color: var(--ink);
+  border-color: var(--coral);
+}
+.device-chip.active .dot{background:var(--ink);}
+.device-chip .host-tag{
+  font-size:9px; text-transform:uppercase; letter-spacing:0.06em;
+  background: rgba(0,0,0,0.25); padding:1px 5px; border-radius:5px;
+}
+.device-chip.active .host-tag{ background: rgba(0,0,0,0.15); }
+
+.screen{ padding: 22px 20px 20px; flex:1; display:flex; flex-direction:column; gap:16px; }
+.eyebrow{
+  font-size:11px; text-transform:uppercase; letter-spacing:0.14em;
+  color: var(--gold); font-weight:600;
+}
+.card{
+  background: var(--panel);
+  border:1px solid var(--line);
+  border-radius: var(--radius);
+  padding:18px;
+}
+.card.raised{ background: var(--panel-raised); }
+.muted{ color: var(--text-dim); font-size:14px; line-height:1.5; }
+input[type=text], input[type=number], textarea{
+  width:100%;
+  background: var(--ink);
+  border:1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding:12px 14px;
+  font-family:inherit;
+  font-size:15px;
+  resize:vertical;
+}
+textarea{min-height:70px;}
+input:focus, textarea:focus, button:focus-visible{
+  outline:2px solid var(--mint); outline-offset:2px;
+}
+label.field{ display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--text-dim); font-weight:600; }
+button{
+  font-family:inherit; font-weight:700; font-size:15px;
+  border:none; border-radius: var(--radius-sm);
+  padding:13px 18px;
+  cursor:pointer;
+  transition: transform .08s ease, filter .12s ease;
+}
+button:active{ transform: scale(0.98); }
+button.primary{ background: var(--coral); color: var(--ink); }
+button.primary:hover{ filter:brightness(1.08); }
+button.secondary{ background: transparent; color: var(--text); border:1px solid var(--line); }
+button.ghost{ background: transparent; color: var(--text-dim); border:1px dashed var(--line); }
+button:disabled{ opacity:0.35; cursor:not-allowed; }
+.btn-row{ display:flex; gap:10px; }
+.btn-row button{ flex:1; }
+
+.toggle-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.switch{ position:relative; width:46px; height:26px; }
+.switch input{ opacity:0; width:0; height:0; }
+.switch .track{
+  position:absolute; inset:0; background: var(--panel-raised); border:1px solid var(--line);
+  border-radius:999px; cursor:pointer; transition:.15s;
+}
+.switch .track:before{
+  content:""; position:absolute; width:18px; height:18px; left:3px; top:3px;
+  background: var(--text-dim); border-radius:50%; transition:.15s;
+}
+.switch input:checked + .track{ background: var(--coral); border-color:var(--coral); }
+.switch input:checked + .track:before{ transform: translateX(20px); background: var(--ink); }
+
+.player-list{ display:flex; flex-direction:column; gap:8px; }
+.player-row{
+  display:flex; align-items:center; justify-content:space-between;
+  background: var(--panel-raised); border-radius: var(--radius-sm); padding:10px 12px;
+  font-weight:600; font-size:14px;
+}
+.player-row .score{ color: var(--mint); font-family:'Space Grotesk'; }
+.pill{
+  display:inline-flex; align-items:center; font-size:11px; font-weight:700;
+  background: var(--violet); color:var(--ink); padding:2px 8px; border-radius:999px;
+  text-transform:uppercase; letter-spacing:0.04em;
+}
+
+.round-banner{
+  display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+}
+.round-banner .count{ font-size:13px; color:var(--text-dim); font-weight:600; }
+
+.prompt-text{ font-family:'Fraunces', serif; font-size:22px; line-height:1.3; font-weight:600; }
+
+.option-grid{ display:flex; flex-direction:column; gap:10px; }
+.option-btn{
+  width:100%; text-align:left;
+  background: var(--panel-raised);
+  border:1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding:16px;
+  font-size:16px; font-weight:600;
+  color: var(--text);
+}
+.option-btn.picked{ background: var(--coral); color:var(--ink); border-color:var(--coral); }
+.option-btn .tag{
+  display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color: var(--text-dim); margin-bottom:4px; font-weight:700;
+}
+.option-btn.picked .tag{ color: rgba(18,17,26,0.6); }
+
+.answer-slot{
+  background: var(--panel-raised); border:1px solid var(--line); border-radius: var(--radius-sm);
+  padding:14px; font-size:15px; cursor:pointer;
+}
+.answer-slot.picked{ border-color: var(--mint); box-shadow:0 0 0 2px var(--mint) inset; }
+.answer-slot.correct{ border-color: var(--gold); box-shadow:0 0 0 2px var(--gold) inset; }
+.answer-slot .author{ font-size:12px; color:var(--mint); margin-top:6px; font-weight:600; }
+
+.waiting{
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:10px; padding:40px 10px; text-align:center; color: var(--text-dim);
+}
+.waiting .spinner{
+  width:34px; height:34px; border-radius:50%;
+  border:3px solid var(--line); border-top-color: var(--coral);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin{ to{ transform: rotate(360deg); } }
+
+.timer-badge{
+  font-variant-numeric: tabular-nums; font-weight:700; font-size:13px;
+  background: var(--panel-raised); color: var(--gold);
+  border-radius:999px; padding:5px 12px; display:inline-flex; gap:6px; align-items:center;
+}
+
+.score-flash{
+  font-family:'Fraunces', serif; font-size:15px;
+  display:flex; align-items:center; gap:8px;
+  padding:10px 14px; border-radius: var(--radius-sm);
+  background: rgba(94,230,196,0.12); border:1px solid rgba(94,230,196,0.35); color: var(--mint);
+}
+.score-flash.negative{
+  background: rgba(255,93,108,0.12); border-color: rgba(255,93,108,0.35); color: var(--coral);
+}
+
+.field-strip{ display:flex; flex-wrap:wrap; gap:6px; }
+.field-chip{
+  font-size:11px; padding:4px 9px; border-radius:999px;
+  background: var(--panel-raised); color: var(--text-dim); border:1px solid var(--line);
+}
+.field-chip.done{ color: var(--mint); border-color: rgba(94,230,196,0.4); }
+.field-chip.current{ color: var(--gold); border-color: rgba(255,200,87,0.5); }
+
+.story-read{ font-family:'Fraunces', serif; font-size:19px; line-height:1.6; }
+.story-read .blank{ color: var(--gold); font-weight:700; }
+
+.footer-note{ font-size:12px; color: var(--text-dim); text-align:center; padding:10px 0 0; }
+
+.top-bar-lobby{ display:flex; align-items:center; justify-content:space-between; }
+.code-badge{
+  font-family:'Space Grotesk'; font-weight:700; letter-spacing:0.08em;
+  background: var(--panel-raised); padding:6px 12px; border-radius:999px; font-size:13px;
+}
+</style>
+</head>
+<body>
+<div id="app" class="app"></div>
+<script id="content-data" type="application/json">{"truthComesOut": {"standard": ["What's the worst thing you've done at a wedding?", "What's the most embarrassing thing you've said in a job interview?", "What's the strangest thing you've googled at 2am?", "What's the pettiest reason you've ever ended a friendship?", "What's the worst lie you've told to get out of plans?", "What's the most childish thing you still do?", "What's the weirdest food combination you secretly love?", "What's the most trouble you got into at school?", "What's the worst haircut you've ever had?", "What's the most expensive thing you've broken by accident?", "What's the strangest item you own that you can't explain owning?", "What's the most awkward thing that's happened to you on a date?", "What's the worst present you've ever given someone?", "What's the most embarrassing thing in your internet search history?", "What's the worst excuse you've used to skip the gym, work, or school?", "What's the pettiest thing you've held a grudge over?", "What's the most ridiculous thing you've cried about?", "What's the worst thing you've done to win an argument?", "What's the strangest thing you've done to impress someone?", "What's the most embarrassing nickname you've ever had?", "What's the worst thing you've said about someone that got back to them?", "What's the most irrational fear you have?", "What's the silliest thing you've been genuinely proud of?", "What's the most awkward thing you've done in a lift?", "What's the worst thing you've done while pretending to be someone else, e.g. on the phone or in an email?", "What's the strangest rule you've ever set for yourself?", "What's the most embarrassing thing you've done for money?", "What's the worst thing you've done out of jealousy?", "What's the strangest thing you believed as a child?", "What's the most chaotic thing you've done on a night out?", "What's a conspiracy theory you still believe in?", "What's a food you pretend to dislike?", "What's the weirdest thing you've ever convinced yourself was a good idea at the time?", "What's the most unexpected compliment you've ever received?", "What's the strangest thing you've kept for sentimental reasons?", "What's the most unnecessary purchase you've ever made?", "What's the dumbest hill you're willing to die on?", "What's the most awkward text you've ever sent to the wrong person?", "What's a talent you have that's completely useless?", "What's the weirdest thing you've done because you were bored?", "What's the most ridiculous thing you've ever been competitive about?", "What's the longest you've gone pretending you knew what someone was talking about?", "What's the worst fashion trend you enthusiastically joined?", "What's the strangest thing you've ever named?", "What's the most embarrassing thing a parent or teacher ever caught you doing?", "What's the most impulsive thing you've ever done?", "What's something you were convinced would make you look cool but didn't?", "What's the weirdest place you've accidentally fallen asleep?", "What's the strangest thing you've ever won?", "What's the most ridiculous reason you've been annoyed recently?", "What's a skill you were certain you'd be good at but weren't?", "What's the worst advice you've ever given someone?", "What's the biggest misunderstanding you've ever been involved in?", "What's the most awkward thing you've overheard by accident?", "What's the weirdest habit you picked up and still haven't dropped?", "What's the most embarrassing thing you've done in front of a group of people?", "What's the strangest rumour you've heard about yourself?", "What's the most bizarre thing you've done purely out of curiosity?", "What's the longest you've committed to a joke?", "What's the most ridiculous thing you've spent a surprisingly long time researching?", "What's the worst prediction you've ever confidently made?", "What's the strangest thing you've become emotionally attached to?", "What's the most pointless argument you've ever had?", "What's the weirdest thing you've done while trying to avoid an awkward conversation?", "What's the funniest thing you've ever misheard?", "What's the most awkward coincidence you've ever experienced?", "What's the strangest thing you've done to save money?", "What's the most unnecessary challenge you've set yourself?", "What's the weirdest thing you've taken far too seriously?", "What's the funniest reason you've ever been late?", "What's the worst excuse you've given for a hangover?", "What's the biggest lie you've told and got away with?", "What's the closest you've come to getting kicked out of somewhere?", "What's the most questionable purchase you've ever made after midnight?", "What's the most trouble you've caused by accident?", "What's the biggest risk you've taken that somehow worked out?", "What's the rudest thing you've said to someone who deserved it?", "What's the most embarrassing thing you've done in front of a boss, teacher, or authority figure?", "What's the shadiest thing you've done that you're secretly proud of?", "What's the most ridiculous situation you've had to talk your way out of?", "What's the closest you've come to being banned from somewhere?", "What's the worst thing you've done because you thought nobody would find out?", "What's the most irresponsible thing you've spent money on?", "What's the biggest overreaction you've ever had?", "What's the most chaotic message you've sent and immediately regretted?"], "adult": ["What's the worst thing you've done while drunk that you still haven't lived down?", "What's the strangest place you've hooked up?", "What's the most embarrassing thing that's happened to you on a dating app?", "What's the worst thing you've done to get out of a bad date?", "What's the strangest thing you've said during sex?", "What's the pettiest reason you've ghosted someone?", "What's the worst thing you've done to get someone's attention when drunk?", "What's the most embarrassing thing a partner has caught you doing?", "What's the worst pickup line you've ever used, unironically?", "What's the strangest thing you've done the morning after a one-night stand?", "What's the worst thing you've lied about to a partner to avoid an argument?", "What's the most chaotic thing you've done at an ex's request, or to spite an ex?", "What's the worst thing you've done while trying to seem more experienced than you are?", "What's the strangest thing you've fantasised about that has nothing to do with sex?", "What's the worst decision you've ever made while drunk?", "What's the worst thing you've done to avoid running into an ex?", "What's the most embarrassing thing you've done to impress someone in bed?", "What's the strangest reason you've turned someone down?", "What's the worst thing you've said during an argument with a partner that you regret?", "What's the most awkward thing that's happened mid-hookup?", "What's the worst thing you've done because you were too drunk to stop yourself?", "What's the strangest place you've had a crush on someone, e.g. work, a wedding, a funeral?", "What's the worst thing you've done to make an ex jealous?", "What's the most embarrassing thing you've sent to the wrong person?", "What's the worst thing you've pretended to enjoy to keep someone interested?", "What's the strangest thing that's turned you on that you can't explain?", "What's the worst thing you've done on a first date to seem chill about it?", "What's the most chaotic thing you've done after being dumped?", "What's the worst thing you've done while trying to make an exit the morning after?", "What's the strangest double standard you hold in relationships?"]}, "splitTheRoom": {"standard": [{"optionA": "Cheating on a test", "optionB": "cheating on a partner", "promptSuffix": "which is worse?"}, {"optionA": "Lying to get out of a party", "optionB": "lying to get out of work", "promptSuffix": "which is worse?"}, {"optionA": "Being all talk and no action", "optionB": "being brutally blunt", "promptSuffix": "which is worse?"}, {"optionA": "A friend who's always late", "optionB": "a friend who always cancels", "promptSuffix": "which is worse?"}, {"optionA": "Losing your phone", "optionB": "losing your wallet", "promptSuffix": "which is worse?"}, {"optionA": "A power cut", "optionB": "no Wi-Fi for a week", "promptSuffix": "which is worse?"}, {"optionA": "Being too honest", "optionB": "being too polite", "promptSuffix": "which causes more damage?"}, {"optionA": "A messy flatmate", "optionB": "a noisy flatmate", "promptSuffix": "which is worse?"}, {"optionA": "Working every weekend", "optionB": "working every night", "promptSuffix": "which is worse?"}, {"optionA": "A bad haircut", "optionB": "a bad tattoo", "promptSuffix": "which is worse?"}, {"optionA": "Forgetting a birthday", "optionB": "forgetting an anniversary", "promptSuffix": "which is worse?"}, {"optionA": "A cold shower", "optionB": "a lukewarm bath", "promptSuffix": "which is worse?"}, {"optionA": "Losing a board game badly", "optionB": "winning and gloating", "promptSuffix": "which is worse?"}, {"optionA": "A boring holiday", "optionB": "a stressful holiday", "promptSuffix": "which is worse?"}, {"optionA": "Talking too much", "optionB": "talking too little in a group", "promptSuffix": "which is worse?"}, {"optionA": "A bad boss", "optionB": "a two-hour commute", "promptSuffix": "which is worse?"}, {"optionA": "Losing your keys", "optionB": "losing your charger", "promptSuffix": "which is worse?"}, {"optionA": "Public speaking", "optionB": "awkward small talk", "promptSuffix": "which is worse?"}, {"optionA": "A burnt dinner", "optionB": "a cold dinner", "promptSuffix": "which is worse?"}, {"optionA": "Being stood up", "optionB": "being ghosted", "promptSuffix": "which is worse?"}, {"optionA": "A spoiler", "optionB": "a plot hole", "promptSuffix": "which ruins a film more?"}, {"optionA": "Missing a flight", "optionB": "missing a train", "promptSuffix": "which is worse?"}, {"optionA": "A snorer", "optionB": "a duvet hog", "promptSuffix": "which is worse to share a bed with?"}, {"optionA": "Overpacking", "optionB": "underpacking for a trip", "promptSuffix": "which is worse?"}, {"optionA": "Bad Wi-Fi", "optionB": "bad phone signal", "promptSuffix": "which is more annoying?"}, {"optionA": "Being interrupted", "optionB": "being ignored", "promptSuffix": "which is worse?"}, {"optionA": "A messy car", "optionB": "a messy bedroom", "promptSuffix": "which says more about someone?"}, {"optionA": "Being a bad loser", "optionB": "being a sore winner", "promptSuffix": "which is worse?"}, {"optionA": "A friend who never texts back", "optionB": "a friend who always double-texts", "promptSuffix": "which is more annoying?"}, {"optionA": "Never having enough time", "optionB": "never having enough money", "promptSuffix": "which is worse?"}, {"optionA": "Being known as the boring one", "optionB": "being known as the chaotic one", "promptSuffix": "which is worse?"}, {"optionA": "A friend who always wants to leave early", "optionB": "a friend who always wants to stay out", "promptSuffix": "which is worse?"}, {"optionA": "Knowing exactly what you're doing in life", "optionB": "being completely carefree", "promptSuffix": "which is better?"}, {"optionA": "Being too competitive", "optionB": "not competitive enough", "promptSuffix": "which is worse?"}, {"optionA": "A friend who gives brutal honesty", "optionB": "a friend who tells you what you want to hear", "promptSuffix": "which is better?"}, {"optionA": "Always having to organise everything", "optionB": "never being allowed to decide anything", "promptSuffix": "which is worse?"}, {"optionA": "Being the smartest person in the room", "optionB": "the funniest person in the room", "promptSuffix": "which would you rather be?"}, {"optionA": "A friend who borrows things without asking", "optionB": "a friend who never returns them", "promptSuffix": "which is worse?"}, {"optionA": "Having an embarrassing photo go viral", "optionB": "an embarrassing text go viral", "promptSuffix": "which is worse?"}, {"optionA": "Being forgotten at a party", "optionB": "being the centre of attention at a party", "promptSuffix": "which is worse?"}, {"optionA": "Having a terrible memory", "optionB": "having no sense of direction", "promptSuffix": "which is worse?"}, {"optionA": "A friend who always interrupts", "optionB": "a friend who never contributes", "promptSuffix": "which is worse?"}, {"optionA": "Being unlucky", "optionB": "being irresponsible", "promptSuffix": "which causes more problems?"}, {"optionA": "Winning every argument", "optionB": "winning every competition", "promptSuffix": "which would you choose?"}, {"optionA": "A friend who overshares everything", "optionB": "a friend who never shares anything", "promptSuffix": "which is worse?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to cry at a film?"}, {"optionA": "Morning people", "optionB": "Night owls", "promptSuffix": "Who's a better driver?"}, {"optionA": "Tea drinkers", "optionB": "Coffee drinkers", "promptSuffix": "Who's more organised?"}, {"optionA": "Older siblings", "optionB": "Younger siblings", "promptSuffix": "Who's more competitive?"}, {"optionA": "Cat people", "optionB": "Dog people", "promptSuffix": "Who's better at keeping secrets?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to hold a grudge?"}, {"optionA": "People who follow recipes", "optionB": "People who wing it", "promptSuffix": "Who's a better cook?"}, {"optionA": "Early birds", "optionB": "Night owls", "promptSuffix": "Who's more punctual?"}, {"optionA": "Extroverts", "optionB": "Introverts", "promptSuffix": "Who's more likely to overreact?"}, {"optionA": "Drivers", "optionB": "Passengers", "promptSuffix": "Who's better at giving directions?"}, {"optionA": "Optimists", "optionB": "Pessimists", "promptSuffix": "Who's more likely to fall for a prank?"}, {"optionA": "Oldest siblings", "optionB": "Only children", "promptSuffix": "Who's better in a crisis?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to complain in a restaurant?"}, {"optionA": "Parents", "optionB": "Non-parents", "promptSuffix": "Who's a better multitasker?"}, {"optionA": "Competitive people", "optionB": "Laid-back people", "promptSuffix": "Who's more likely to cheat at board games?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who holds a grudge longer?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to apologise first?"}, {"optionA": "Extroverts", "optionB": "Introverts", "promptSuffix": "Who's a better listener?"}, {"optionA": "Close friends", "optionB": "Family", "promptSuffix": "Who's more likely to remember your birthday?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to ghost someone?"}, {"optionA": "Students", "optionB": "Professionals", "promptSuffix": "Who's messier?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to laugh at their own joke?"}, {"optionA": "Planners", "optionB": "Last-minute shoppers", "promptSuffix": "Who's a better gift-giver?"}, {"optionA": "First-time travellers", "optionB": "Frequent travellers", "promptSuffix": "Who's more likely to overpack?"}, {"optionA": "Older generations", "optionB": "Younger generations", "promptSuffix": "Who's more stubborn?"}, {"optionA": "The bride's side", "optionB": "The groom's side", "promptSuffix": "Who's more likely to cry at a wedding?"}, {"optionA": "Fast repliers", "optionB": "Thoughtful repliers", "promptSuffix": "Who's a better texter?"}, {"optionA": "Drivers", "optionB": "Passengers", "promptSuffix": "Who's more likely to get lost?"}, {"optionA": "Siblings", "optionB": "Friends", "promptSuffix": "Who's more competitive?"}, {"optionA": "Morning people", "optionB": "Night owls", "promptSuffix": "Who's more likely to hit snooze?"}, {"optionA": "Optimists", "optionB": "Pessimists", "promptSuffix": "Who's more likely to survive a zombie apocalypse?"}, {"optionA": "People with tidy bedrooms", "optionB": "Messy bedrooms", "promptSuffix": "Who's more trustworthy?"}, {"optionA": "Extroverts", "optionB": "Introverts", "promptSuffix": "Who's more likely to become famous?"}, {"optionA": "Friends", "optionB": "Family", "promptSuffix": "Who gives better advice?"}, {"optionA": "Dreamers", "optionB": "Realists", "promptSuffix": "Who's more likely to break a promise?"}, {"optionA": "Stubborn people", "optionB": "Clever people", "promptSuffix": "Who's harder to argue with?"}, {"optionA": "Creative people", "optionB": "Organised people", "promptSuffix": "Who's more likely to get distracted?"}, {"optionA": "Older siblings", "optionB": "Younger siblings", "promptSuffix": "Who's more likely to start a business?"}, {"optionA": "Lucky people", "optionB": "Hardworking people", "promptSuffix": "Who's more likely to become rich?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to laugh at the wrong moment?"}, {"optionA": "Younger generations", "optionB": "Older generations", "promptSuffix": "Who's more likely to survive without their phone?"}, {"optionA": "Planners", "optionB": "Spontaneous people", "promptSuffix": "Who's a better holiday companion?"}, {"optionA": "Friends", "optionB": "Family", "promptSuffix": "Who exaggerates stories more?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to cry after winning?"}, {"optionA": "Talent", "optionB": "Luck", "promptSuffix": "Who's more likely to become a celebrity?"}, {"optionA": "Getting blackout drunk at a wedding", "optionB": "getting kicked out of a bar", "promptSuffix": "which is worse?"}, {"optionA": "Gambling away your rent money", "optionB": "gambling away a bonus", "promptSuffix": "which is worse?"}, {"optionA": "Getting caught vaping in a work toilet", "optionB": "getting caught drinking at your desk", "promptSuffix": "which is worse?"}, {"optionA": "Being fired for something you said", "optionB": "something you did", "promptSuffix": "which is worse?"}, {"optionA": "Racking up credit card debt on clothes", "optionB": "on nights out", "promptSuffix": "which is worse?"}, {"optionA": "A drunken argument with a stranger", "optionB": "a drunken argument with a friend", "promptSuffix": "which is worse?"}, {"optionA": "Lying about your age to get into a club", "optionB": "lying about your job to impress someone", "promptSuffix": "which is worse?"}, {"optionA": "Waking up with no memory of the night", "optionB": "waking up somewhere unexpected", "promptSuffix": "which is worse?"}, {"optionA": "Betting money you don't have", "optionB": "lending money you'll never get back", "promptSuffix": "which is worse?"}, {"optionA": "Getting caught stealing a colleague's lunch", "optionB": "getting caught stealing office supplies", "promptSuffix": "which is more embarrassing?"}, {"optionA": "Losing money on a bad bet", "optionB": "losing money on a bad investment", "promptSuffix": "which stings more?"}, {"optionA": "Being the drunkest person at a wedding", "optionB": "being the drunkest person at a work event", "promptSuffix": "which is worse?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to get fired for something said at the pub?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to gamble away a payday?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to blackout on a night out?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to lie about their salary?"}, {"optionA": "Men", "optionB": "Women", "promptSuffix": "Who's more likely to get caught vaping somewhere they shouldn't?"}], "headToHead": ["Remembers birthdays better", "Is the better cook", "Has the better fashion sense", "Is the funnier one", "Is more likely to win an argument", "Is the better driver", "Has the better singing voice", "Is more organised", "Is more likely to be late", "Gives better advice", "Is the better dancer", "Has the better taste in music", "Is more competitive", "Is more likely to apologise first", "Has the better poker face", "Is more reliable", "Is the better cook under pressure", "Has the messier room", "Is more likely to hold a grudge", "Is the better public speaker", "Has the better memory", "Is more likely to talk their way out of trouble", "Is more likely to fall asleep first", "Has the better sense of direction", "Is more likely to overreact", "Has the better handwriting", "Is the better multitasker", "Is more likely to cry at a film", "Is more stubborn", "Has the better dress sense on a night out", "Is more likely to survive a zombie apocalypse", "Is more likely to accidentally start an argument", "Is more likely to become famous", "Is more likely to end up on a reality TV show", "Is more likely to forget an important birthday", "Is more likely to lose their phone", "Is more likely to get banned from somewhere", "Would make the best Prime Minister", "Is more likely to accidentally go viral", "Is more likely to survive in the wilderness", "Is more likely to spend money on something ridiculous", "Is more likely to win a pub quiz", "Is more likely to talk their way into an event they weren't invited to", "Is more likely to become a millionaire", "Is more likely to accidentally reveal a secret", "Is more likely to befriend a stranger", "Is more likely to start a side hustle", "Is more likely to end up in a documentary", "Is more likely to survive a week without internet", "Is more likely to be voted manager of a football team", "Is more likely to become a cult leader", "Is more likely to get lost abroad", "Is more likely to order the weirdest thing on a menu", "Is more likely to be awake at 3am", "Is more likely to fake confidence and get away with it", "Is more likely to become an internet meme", "Is more likely to be the last person left at a party", "Is more likely to accidentally make a situation worse", "Is more likely to have a Wikipedia page one day", "Is more likely to win over a difficult crowd", "Is more likely to get kicked out of a bar", "Is more likely to blackout on a night out", "Is more likely to gamble away a payday", "Is more likely to lie about their salary", "Is more likely to get fired for something they said", "Is more likely to get caught vaping somewhere they shouldn't", "Is more likely to rack up debt on clothes", "Is more likely to lose money on a bad bet", "Is more likely to be the drunkest person at a wedding", "Is more likely to argue with a stranger on a night out", "Is more likely to lie about their age to get into somewhere", "Is more likely to wake up with no memory of the night", "Is more likely to end up somewhere unexpected after a night out", "Is more likely to steal a colleague's lunch", "Is more likely to lend money they'll never get back", "Is more likely to bet money they don't have", "Is more likely to get banned from a pub"], "adult": ["Sleeping with an ex vs sleeping with a friend's ex, which is worse?", "A one-night stand vs a situationship, which is more confusing?", "What's worse: racism or sexism?", "Getting caught masturbating by a partner vs getting caught by a parent, which is worse?", "Being ghosted after a first date vs being ghosted after sleeping together, which stings more?", "A partner who's bad in bed vs a partner who's boring outside the bedroom, which is worse?", "Being someone's rebound vs being someone's secret, which is worse?", "A drunk hook-up vs a sober one you regret, which is worse?", "Catching feelings for a hookup vs catching feelings for a friend, which is more awkward?", "An ex who won't stop texting vs an ex who never speaks again, which is worse?", "Missionary vs doggystyle, which is better?", "A partner who's clingy vs a partner who's distant, which is worse?", "Getting dumped by text vs getting ghosted, which is worse?", "A cheating partner vs an impotent partner, which is worse?", "Sleeping with someone on the first date vs waiting months, what's better?", "A partner with a wandering eye vs a partner with a wandering hand, which is worse?", "Being caught checking someone out vs being caught in a lie about an ex, which is more embarrassing?", "An awkward morning after vs an awkward run-in with an ex, which is worse?", "A partner's ex who's still around vs a partner's ex who ghosted them, which is more concerning?", "Getting a text from an ex at 2am vs sending one, which is worse?", "A one-night stand who wants to cuddle vs one who leaves immediately, which is more awkward?", "Being the other person vs being cheated on, which would you rather be?", "A partner who overshares your sex life vs one who never talks about it, which is worse?", "Hooking up with a friend vs hooking up with a friend's ex, which causes more drama?", "A relationship that ends with silence vs one that ends with a scene, which is worse?", "Being caught mid-hookup vs being caught mid-lie, which is more mortifying?", "A partner who's jealous of your ex vs a partner who's friends with your ex, which is more awkward?", "Getting matched with your ex on a dating app vs getting matched with their friend, which is worse?", "A hookup who overstays vs one who leaves without saying goodbye, which is worse?", "A partner who flirts with everyone vs a partner who dislikes you, which is more concerning?", "Being unable to remember a hookup's name vs unable to remember the night, which is worse?", "A situationship that never gets defined vs one that ends badly, which is worse?", "Who's more likely to have a one-night stand, men or women?", "Who's more likely to keep a dating app as a backup, men or women?", "Who's more likely to stalk an ex's social media, men or women?", "Who's more likely to lie about their body count, men or women?", "Who's more likely to hook up with a friend's ex, men or women?", "Who's more likely to ghost after sleeping together, men or women?", "Who's more likely to fake it, men or women?", "Who's more likely to overshare about their sex life, men or women?", "Who's more likely to have a walk of shame story, men or women?"]}}
+</script>
+<script type="module" src="game.js"></script>
+</body>
+</html>
