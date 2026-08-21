@@ -210,7 +210,6 @@ function normalizeRoundState() {
     rs.pendingAnswers = rs.pendingAnswers || {};
     rs.answers = rs.answers || {};
     rs.revealOrder = rs.revealOrder || [];
-    rs.guessedBy = rs.guessedBy || {};
     rs.currentGuesses = rs.currentGuesses || {};
     rs.passResults = rs.passResults || [];
     rs.usedTopic = rs.usedTopic || [];
@@ -221,6 +220,8 @@ function normalizeRoundState() {
     rs.usedBinary = rs.usedBinary || [];
     rs.usedNumber = rs.usedNumber || [];
     rs.usedSingleWord = rs.usedSingleWord || [];
+    rs.judgeAnswers = rs.judgeAnswers || {};
+    rs.judgeOrder = rs.judgeOrder || [];
   } else if (rs.type === 'sayAnything') {
     rs.answers = rs.answers || {};
     rs.votes = rs.votes || {};
@@ -385,7 +386,7 @@ function startPendingRound() {
   else if (type === 'triviaBluff') startTriviaBluff();
   else if (type === 'imposter') startImposter();
 }
-function continueFromRoundSummary() { transactionalCommit(() => { startPendingRound(); }); }
+function continueFromRoundSummary(playerId) { transactionalCommit(() => { if (playerId !== DB.meta.hostId) return; if (DB.meta.status !== 'round_summary') return; startPendingRound(); }); }
 
 
 // ============================================================
@@ -481,9 +482,11 @@ function truthReveal() {
   rs.fooledCount = fooledCount;
   rs.fakeFoolCounts = fakeFoolCounts;
 }
-function truthNext() {
+function truthNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.turnIndex++;
     if (rs.turnIndex >= rs.totalTurns) { advanceToNextRound(); return; }
     startTruthTurn();
@@ -542,9 +545,11 @@ function storyEnterReading() {
   rs.phase = 'reading';
   rs.currentReadIndex = 0;
 }
-function storyNextRead() {
+function storyNextRead(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reading') return; // already advanced by someone else's tap
     const keys = Object.keys(rs.stories);
     rs.currentReadIndex++;
     if (rs.currentReadIndex >= keys.length) { rs.phase = 'voting'; }
@@ -572,7 +577,7 @@ function storyReveal() {
     rs.stories[key].fields.forEach(f => { if (f) addScore(f.contributorId, pointsPerField); });
   });
 }
-function storyFinish() { transactionalCommit(() => { advanceToNextRound(); }); }
+function storyFinish(playerId) { transactionalCommit(() => { if (playerId !== DB.meta.hostId) return; if (!DB.roundState || DB.roundState.phase !== 'reveal') return; advanceToNextRound(); }); }
 function storyFieldText(story, index) {
   const f = story.fields[index];
   return f ? f.value : '____';
@@ -664,9 +669,11 @@ function splitReveal() {
     }
   }
 }
-function splitNext() {
+function splitNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.instanceIndex++;
     if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
     splitStartInstance();
@@ -736,9 +743,11 @@ function rankingReveal() {
   rs.roundedAvg = roundedAvg;
   rs.unanimousFirst = unanimousFirst;
 }
-function rankingNext() {
+function rankingNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.instanceIndex++;
     if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
     rankingStartInstance();
@@ -764,7 +773,6 @@ function startSecretOpinions() {
     answers: {},
     revealOrder: [],
     currentRevealIndex: 0,
-    guessedBy: {},
     currentGuesses: {},
     passResults: []
   };
@@ -779,7 +787,6 @@ function secretStartInstance() {
   rs.answers = {};
   rs.revealOrder = [];
   rs.currentRevealIndex = 0;
-  rs.guessedBy = {};
   rs.currentGuesses = {};
   rs.passResults = [];
   if (useTopic) {
@@ -800,54 +807,79 @@ function secretSubmitAnswer(playerId, answer) {
     if (Object.keys(rs.pendingAnswers).length >= playerIds().length) secretAdvanceToGuessing();
   });
 }
+// Multiple players can give the exact same answer (two people both
+// pick "Zain", say). The old version revealed each author one at a
+// time, so two identical-looking "who picked Zain" screens showed up
+// back to back with nothing to tell them apart, and a guess used up
+// against the wrong one just wasted it. Instead, every distinct
+// answer value is revealed once, showing how many people gave it,
+// and guessers pick that many names in one go.
 function secretAdvanceToGuessing() {
   const rs = DB.roundState;
   rs.answers = { ...rs.pendingAnswers };
-  rs.revealOrder = shuffle(Object.keys(rs.answers));
+  const groups = {};
+  Object.entries(rs.answers).forEach(([authorId, value]) => {
+    const key = String(value);
+    groups[key] = groups[key] || [];
+    groups[key].push(authorId);
+  });
+  rs.groups = groups; // answer value -> [authorIds who gave that answer]
+  rs.revealOrder = shuffle(Object.keys(groups));
   rs.currentRevealIndex = 0;
   rs.currentGuesses = {};
   rs.phase = 'guessing';
 }
+function secretCurrentGroupAuthors() {
+  const rs = DB.roundState;
+  const key = rs.revealOrder[rs.currentRevealIndex];
+  return rs.groups[key];
+}
 function secretEligibleGuessers() {
-  const rs = DB.roundState;
-  const authorId = rs.revealOrder[rs.currentRevealIndex];
-  return playerIds().filter(id => id !== authorId);
+  const authors = secretCurrentGroupAuthors();
+  return playerIds().filter(id => !authors.includes(id));
 }
-function secretAlreadyAccused(voterId, suspectId) {
-  const rs = DB.roundState;
-  return (rs.guessedBy[voterId] || []).includes(suspectId);
-}
-function secretSubmitGuess(voterId, suspectId) {
+// suspectIds must be an array with exactly one entry per author in
+// this group (so a group of 2 needs a 2-name guess, not a 1-at-a-time
+// guess), and no repeats within the same guess.
+function secretSubmitGuess(voterId, suspectIds) {
   transactionalCommit(() => {
     const rs = DB.roundState;
     if (rs.phase !== 'guessing') return;
-    if (secretAlreadyAccused(voterId, suspectId)) return;   // can't re-accuse the same player this instance
-    rs.currentGuesses[voterId] = suspectId;
+    const authors = secretCurrentGroupAuthors();
+    if (!Array.isArray(suspectIds) || suspectIds.length !== authors.length) return;
+    if (new Set(suspectIds).size !== suspectIds.length) return;
+    rs.currentGuesses[voterId] = suspectIds;
     const eligible = secretEligibleGuessers();
     if (Object.keys(rs.currentGuesses).length >= eligible.length) secretCommitPass();
   });
 }
 function secretCommitPass() {
   const rs = DB.roundState;
-  const authorId = rs.revealOrder[rs.currentRevealIndex];
-  let correctCount = 0;
-  const guesses = [];
-  Object.entries(rs.currentGuesses).forEach(([voterId, suspectId]) => {
-    rs.guessedBy[voterId] = (rs.guessedBy[voterId] || []).concat(suspectId);
-    const correct = suspectId === authorId;
-    if (correct) { addScore(voterId, 1); correctCount++; }
-    guesses.push({ voterId, suspectId, correct });
+  const key = rs.revealOrder[rs.currentRevealIndex];
+  const authors = secretCurrentGroupAuthors();
+  const totalGuessers = Object.keys(rs.currentGuesses).length;
+  const perAuthor = authors.map(authorId => {
+    let correctCount = 0;
+    Object.values(rs.currentGuesses).forEach(suspectIds => { if (suspectIds.includes(authorId)) correctCount++; });
+    const missedBy = totalGuessers - correctCount;
+    if (missedBy > 0) addScore(authorId, missedBy);
+    return { authorId, correctCount, missedBy };
   });
-  const missedBy = Object.keys(rs.currentGuesses).length - correctCount;
-  if (missedBy > 0) addScore(authorId, missedBy);
-  rs.passResults.push({ authorId, answerText: rs.answers[authorId], guesses, correctCount, missedBy });
+  // +1 to a guesser for each author in the group they correctly included
+  Object.entries(rs.currentGuesses).forEach(([voterId, suspectIds]) => {
+    const hits = suspectIds.filter(id => authors.includes(id)).length;
+    if (hits > 0) addScore(voterId, hits);
+  });
+  rs.passResults.push({ value: key, authors, perAuthor, totalGuessers });
   rs.currentGuesses = {};
   rs.currentRevealIndex++;
   if (rs.currentRevealIndex >= rs.revealOrder.length) rs.phase = 'reveal';
 }
-function secretFinish() {
+function secretFinish(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.instanceIndex++;
     if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
     secretStartInstance();
@@ -897,10 +929,12 @@ function crystalDedupKey(subType, item) {
 function crystalStartTurn() {
   const rs = DB.roundState;
   rs.subjectId = rs.subjectOrder[rs.turnIndex];
-  rs.phase = 'choosing';
   rs.subjectChoice = null;
   rs.pendingGuesses = {};
   rs.guesses = {};
+  rs.judgeAnswers = {};
+  rs.judgeOrder = [];
+  rs.winnerId = null;
   const subType = pick(['binary', 'number', 'singleWord']);
   rs.subType = subType;
   const pool = contentTiersFor(DB.meta).flatMap(t => CONTENT.crystalBall[subType][t] || []);
@@ -913,12 +947,18 @@ function crystalStartTurn() {
     rs.optionA = chosen.optionA;
     rs.optionB = chosen.optionB;
     rs.promptText = chosen.rawText.replace(/\{Player\}/g, subjectName);
+    rs.phase = 'choosing';
   } else if (subType === 'number') {
     rs.min = chosen.min;
     rs.max = chosen.max;
     rs.promptText = chosen.text.replace(/\{Player\}/g, subjectName);
+    rs.phase = 'choosing';
   } else {
+    // single-word: guessing an exact word is hard to score fairly, so
+    // instead everyone else writes their own answer and the subject
+    // picks their favourite, same spirit as SayAnything's judging.
     rs.promptText = chosen.replace(/\{Player\}/g, subjectName);
+    rs.phase = 'writing';
   }
 }
 function crystalSubmitChoice(playerId, choice) {
@@ -940,6 +980,31 @@ function crystalSubmitGuess(playerId, guess) {
     if (Object.keys(rs.pendingGuesses).length >= crystalEligibleGuessers().length) crystalReveal();
   });
 }
+// Single-word only: everyone but the subject writes their own answer.
+function crystalSubmitJudgeAnswer(playerId, text) {
+  if (!text.trim()) return;
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    if (rs.phase !== 'writing' || playerId === rs.subjectId) return;
+    rs.judgeAnswers[playerId] = text.trim();
+    if (Object.keys(rs.judgeAnswers).length >= crystalEligibleGuessers().length) {
+      rs.judgeOrder = shuffle(Object.keys(rs.judgeAnswers)); // anonymous order for judging
+      rs.phase = 'judging';
+    }
+  });
+}
+// Single-word only: the subject picks their favourite from the
+// anonymised list, names are revealed once they've picked, not before.
+function crystalSubmitJudgePick(playerId, winnerAuthorId) {
+  transactionalCommit(() => {
+    const rs = DB.roundState;
+    if (rs.phase !== 'judging' || playerId !== rs.subjectId) return;
+    if (!rs.judgeAnswers[winnerAuthorId]) return;
+    rs.winnerId = winnerAuthorId;
+    addScore(winnerAuthorId, 1);
+    rs.phase = 'reveal';
+  });
+}
 function crystalReveal() {
   const rs = DB.roundState;
   rs.phase = 'reveal';
@@ -953,13 +1018,13 @@ function crystalReveal() {
       entries.forEach(([pid, g]) => { const d = Math.abs(Number(g) - Number(rs.subjectChoice)); if (d < best) best = d; });
       entries.forEach(([pid, g]) => { if (Math.abs(Number(g) - Number(rs.subjectChoice)) === best) addScore(pid, 1); });
     }
-  } else {
-    Object.entries(rs.guesses).forEach(([pid, g]) => { if (wordsMatch(g, rs.subjectChoice)) addScore(pid, 1); });
   }
 }
-function crystalNext() {
+function crystalNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.turnIndex++;
     if (rs.turnIndex >= rs.totalTurns) { advanceToNextRound(); return; }
     crystalStartTurn();
@@ -1055,9 +1120,11 @@ function sayAnythingReveal() {
   Object.entries(tally).forEach(([ownerId, count]) => addScore(ownerId, count));
   rs.voteTally = tally;
 }
-function sayAnythingNext() {
+function sayAnythingNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.instanceIndex++;
     if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
     sayAnythingStartInstance();
@@ -1168,9 +1235,11 @@ function triviaBluffReveal() {
     else addScore(ownerId, 2); // fake writer fooled someone
   });
 }
-function triviaBluffNext() {
+function triviaBluffNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.instanceIndex++;
     if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
     triviaBluffStartInstance();
@@ -1287,9 +1356,11 @@ function imposterReveal() {
   const fooledCount = others.length - accusersOfImposter;
   addScore(imposterId, fooledCount); // +1 per player who didn't suspect the imposter
 }
-function imposterNext() {
+function imposterNext(playerId) {
   transactionalCommit(() => {
+    if (playerId !== DB.meta.hostId) return; // host-only navigation
     const rs = DB.roundState;
+    if (!rs || rs.phase !== 'reveal') return; // already advanced by someone else's tap
     rs.instanceIndex++;
     if (rs.instanceIndex >= rs.totalInstances) { advanceToNextRound(); return; }
     imposterStartInstance();
@@ -1321,9 +1392,23 @@ function h(tag, attrs = {}, children = []) {
   return el;
 }
 
+// A snapshot from ANY player (someone else joining, submitting,
+// voting) triggers this on every connected device, including
+// whoever's mid-sentence in a text box. Rebuilding the DOM from
+// scratch would normally blow away whatever they'd just typed and
+// drop their cursor, forcing them to race the next snapshot. Instead,
+// capture the focused input's value and cursor position first, and
+// restore both onto the freshly-rebuilt element with the same id
+// afterwards, so typing is never interrupted.
 function render() {
+  const active = document.activeElement;
+  let focusInfo = null;
+  if (active && active.id && appEl.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+    focusInfo = { id: active.id, value: active.value, selStart: active.selectionStart, selEnd: active.selectionEnd };
+  }
+
   appEl.innerHTML = '';
-  if (!ROOM_CODE) { appEl.appendChild(renderRoomGate()); return; }
+  if (!ROOM_CODE) { appEl.appendChild(renderRoomGate()); restoreFocus(focusInfo); return; }
   appEl.appendChild(renderTopBar());
   const screen = h('div', { class: 'screen' });
   if (!joined) screen.appendChild(renderJoinForm());
@@ -1332,6 +1417,15 @@ function render() {
   else if (DB.meta.status === 'round_summary') screen.appendChild(renderRoundSummary());
   else if (DB.meta.status === 'session_end') screen.appendChild(renderSessionEnd());
   appEl.appendChild(screen);
+  restoreFocus(focusInfo);
+}
+function restoreFocus(focusInfo) {
+  if (!focusInfo) return;
+  const el = document.getElementById(focusInfo.id);
+  if (!el) return;
+  el.value = focusInfo.value;
+  el.focus();
+  try { el.setSelectionRange(focusInfo.selStart, focusInfo.selEnd); } catch (e) { /* not all input types support this */ }
 }
 
 function renderRoomGate() {
@@ -1343,7 +1437,7 @@ function renderRoomGate() {
     h('p', { class: 'muted' }, `Creates a fresh 4-letter room code. Share it with everyone else so they can join on their own phone.`),
     h('button', { class: 'primary', onclick: async () => { await enterRoom(generateRoomCode(), true); } }, 'Create game')
   ]));
-  const codeInput = h('input', { type: 'text', placeholder: 'e.g. ABCD', maxlength: '4', style: 'text-transform:uppercase;' });
+  const codeInput = h('input', { type: 'text', id: 'room-code-input', placeholder: 'e.g. ABCD', maxlength: '4', style: 'text-transform:uppercase;' });
   wrap.appendChild(h('div', { class: 'card raised' }, [
     h('div', { style: 'font-weight:700;margin-bottom:6px;' }, 'Join with a code'),
     h('label', { class: 'field' }, ['Room code', codeInput]),
@@ -1374,7 +1468,7 @@ function renderJoinForm() {
       h('div', { class: 'player-list' }, playerIds().map(id => h('div', { class: 'player-row' }, [h('span', {}, playerName(id)), isHost(id) ? h('span', { class: 'pill' }, 'Host') : null])))
     ]));
   }
-  const nameInput = h('input', { type: 'text', placeholder: 'Your name' });
+  const nameInput = h('input', { type: 'text', id: 'join-name-input', placeholder: 'Your name' });
   wrap.appendChild(h('div', { class: 'card raised' }, [
     h('label', { class: 'field' }, ['Name', nameInput]),
     h('div', { style: 'height:10px' }),
@@ -1487,6 +1581,17 @@ function writeBox(label, onSubmit) {
   return box;
 }
 function waitingBlock(text) { return h('div', { class: 'waiting' }, [h('div', { class: 'spinner' }), h('div', {}, text)]); }
+// A "move everyone to the next screen" button, restricted to the
+// host. Individual actions (writing, voting, picking) stay open to
+// whichever player they belong to, this is only for pure navigation,
+// which used to be tappable by anyone and caused rounds to skip
+// ahead when several people tapped "Next" at once.
+function nextButton(label, onNext) {
+  if (viewingAs === DB.meta.hostId) {
+    return h('button', { class: 'primary', onclick: () => onNext(viewingAs) }, label);
+  }
+  return waitingBlock(`Waiting for ${playerName(DB.meta.hostId)} to continue.`);
+}
 
 
 // ---------------- Truth Comes Out UI ----------------
@@ -1494,10 +1599,10 @@ function renderTruthComesOut() {
   const rs = DB.roundState;
   const wrap = document.createDocumentFragment();
   wrap.appendChild(roundBanner('Truth Comes Out', `Turn ${rs.turnIndex + 1} / ${rs.totalTurns}`));
+  const subjectName = playerName(rs.subjectId);
+  const combined = subjectName + ', ' + rs.questionText.charAt(0).toLowerCase() + rs.questionText.slice(1);
   wrap.appendChild(h('div', { class: 'card' }, [
-    h('span', { class: 'eyebrow' }, 'Subject'),
-    h('div', { style: 'font-weight:700;margin:2px 0 8px;' }, playerName(rs.subjectId)),
-    h('div', { class: 'prompt-text' }, rs.questionText)
+    h('div', { class: 'prompt-text' }, combined)
   ]));
 
   if (rs.phase === 'writing') {
@@ -1545,7 +1650,7 @@ function renderTruthComesOut() {
       scoreLines.push(h('div', { class: 'score-flash' }, `+${count * 0.5} to ${playerName(authorId)}: their fake answer fooled ${count} player${count === 1 ? '' : 's'}.`));
     });
     scoreLines.forEach(l => wrap.appendChild(l));
-    wrap.appendChild(h('button', { class: 'primary', onclick: truthNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
+    wrap.appendChild(nextButton(rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn', truthNext));
   }
   return wrap;
 }
@@ -1578,7 +1683,7 @@ function renderStoryRound() {
       h('div', { class: 'story-read', style: 'margin-top:8px;' }, storyFullText(story))
     ]));
     wrap.appendChild(h('p', { class: 'muted' }, `Story ${rs.currentReadIndex + 1} of ${keys.length}. Once it's been read out loud, move on.`));
-    wrap.appendChild(h('button', { class: 'primary', onclick: storyNextRead }, rs.currentReadIndex + 1 >= keys.length ? 'All read: start voting' : 'Next story'));
+    wrap.appendChild(nextButton(rs.currentReadIndex + 1 >= keys.length ? 'All read: start voting' : 'Next story', storyNextRead));
   } else if (rs.phase === 'voting') {
     if (rs.votes[viewingAs] !== undefined) {
       wrap.appendChild(waitingBlock(`Vote locked in. Waiting on ${rs.playerOrder.length - Object.keys(rs.votes).length} more...`));
@@ -1608,7 +1713,7 @@ function renderStoryRound() {
       .map(([id, count]) => `${playerName(id)} +${(pts * count).toFixed(pts * count % 1 === 0 ? 0 : 1)} (${count} line${count === 1 ? '' : 's'})`)
       .join(', ');
     wrap.appendChild(h('div', { class: 'score-flash' }, breakdown));
-    wrap.appendChild(h('button', { class: 'primary', onclick: storyFinish }, 'Continue to next round'));
+    wrap.appendChild(nextButton('Continue to next round', storyFinish));
   }
   return wrap;
 }
@@ -1661,7 +1766,7 @@ function renderSplitTheRoom() {
         wrap.appendChild(h('div', { class: 'score-flash' }, `+1 to ${playerName(winnerId)} for winning the majority, plus everyone who backed them.`));
       }
     }
-    wrap.appendChild(h('button', { class: 'primary', onclick: splitNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt'));
+    wrap.appendChild(nextButton(rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt', splitNext));
   }
   return wrap;
 }
@@ -1717,13 +1822,32 @@ function renderRankingWars() {
     wrap.appendChild(h('div', { class: 'card' }, list));
     wrap.appendChild(h('div', { class: 'score-flash' }, `+1 to anyone whose placement of a player matched that player's rounded average.`));
     if (rs.unanimousFirst) wrap.appendChild(h('div', { class: 'score-flash' }, `+1 bonus to ${playerName(rs.unanimousFirst)}: everyone independently ranked them 1st.`));
-    wrap.appendChild(h('button', { class: 'primary', onclick: rankingNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next category'));
+    wrap.appendChild(nextButton(rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next category', rankingNext));
   }
   return wrap;
 }
 
 
 // ---------------- Secret Opinions UI ----------------
+// Tracks the in-progress multi-select for the current group reveal
+// locally, not in Firebase, since it's only meaningful until this
+// player submits. Plain JS state survives a render() rebuild fine
+// (it's not DOM), it just resets whenever the reveal moves to a new
+// group.
+let secretSelectionState = { revealIndex: -1, selected: [] };
+function secretGetSelection(rs) {
+  if (secretSelectionState.revealIndex !== rs.currentRevealIndex) {
+    secretSelectionState = { revealIndex: rs.currentRevealIndex, selected: [] };
+  }
+  return secretSelectionState.selected;
+}
+function secretToggleSelection(id, need) {
+  const sel = secretSelectionState.selected;
+  const idx = sel.indexOf(id);
+  if (idx >= 0) sel.splice(idx, 1);
+  else if (sel.length < need) sel.push(id);
+  render();
+}
 function renderSecretOpinions() {
   const rs = DB.roundState;
   const wrap = document.createDocumentFragment();
@@ -1744,37 +1868,50 @@ function renderSecretOpinions() {
       wrap.appendChild(writeBox('Your honest answer.', (t) => secretSubmitAnswer(viewingAs, t)));
     }
   } else if (rs.phase === 'guessing') {
-    const authorId = rs.revealOrder[rs.currentRevealIndex];
-    const answerText = rs.mode === 'pickAPlayer' ? playerName(rs.answers[authorId]) : rs.answers[authorId];
+    const authors = secretCurrentGroupAuthors();
+    const value = rs.revealOrder[rs.currentRevealIndex];
+    const answerText = rs.mode === 'pickAPlayer' ? playerName(value) : value;
+    const need = authors.length;
     wrap.appendChild(h('div', { class: 'card raised' }, [
       h('span', { class: 'eyebrow' }, `Answer ${rs.currentRevealIndex + 1} of ${rs.revealOrder.length}`),
-      h('div', { class: 'prompt-text', style: 'margin-top:6px;' }, answerText)
+      h('div', { class: 'prompt-text', style: 'margin-top:6px;' }, answerText),
+      h('div', { class: 'muted', style: 'margin-top:4px;' }, need === 1 ? '1 person gave this answer.' : `${need} people gave this answer — pick all ${need}.`)
     ]));
-    if (viewingAs === authorId) {
+    if (authors.includes(viewingAs)) {
       wrap.appendChild(waitingBlock(`That one's yours — sit tight while the others guess.`));
     } else if (rs.currentGuesses[viewingAs] !== undefined) {
       wrap.appendChild(waitingBlock(`Guess locked in. Waiting on ${secretEligibleGuessers().length - Object.keys(rs.currentGuesses).length} more...`));
     } else {
+      const sel = secretGetSelection(rs);
       const grid = h('div', { class: 'option-grid' });
       playerIds().filter(id => id !== viewingAs).forEach(id => {
-        const already = secretAlreadyAccused(viewingAs, id);
-        grid.appendChild(h('button', { class: 'option-btn', disabled: already, onclick: () => secretSubmitGuess(viewingAs, id) }, [
-          playerName(id), already ? h('span', { class: 'tag', style: 'display:block;' }, 'already guessed this round') : null
-        ]));
+        const picked = sel.includes(id);
+        grid.appendChild(h('button', {
+          class: 'option-btn' + (picked ? ' picked' : ''),
+          disabled: !picked && sel.length >= need,
+          onclick: () => secretToggleSelection(id, need)
+        }, playerName(id)));
       });
-      wrap.appendChild(h('p', { class: 'muted' }, `Who wrote this? You can't accuse the same player twice this round.`));
+      wrap.appendChild(h('p', { class: 'muted' }, `Who gave this answer? Selected ${sel.length} of ${need}.`));
       wrap.appendChild(grid);
+      wrap.appendChild(h('button', {
+        class: 'primary', disabled: sel.length !== need,
+        onclick: () => secretSubmitGuess(viewingAs, sel.slice())
+      }, 'Submit guess'));
     }
   } else if (rs.phase === 'reveal') {
     rs.passResults.forEach(pr => {
-      const answerText = rs.mode === 'pickAPlayer' ? `picked ${playerName(pr.answerText)}` : `"${pr.answerText}"`;
+      const answerText = rs.mode === 'pickAPlayer' ? `picked ${playerName(pr.value)}` : `"${pr.value}"`;
+      const authorLines = pr.perAuthor.map(a => h('div', { class: 'muted' },
+        `${playerName(a.authorId)}: ${a.correctCount} of ${pr.totalGuessers} guessed them (+${a.missedBy} to ${playerName(a.authorId)} for staying hidden from ${a.missedBy})`
+      ));
       wrap.appendChild(h('div', { class: 'card raised' }, [
-        h('span', { class: 'eyebrow' }, playerName(pr.authorId)),
+        h('span', { class: 'eyebrow' }, pr.authors.map(playerName).join(', ')),
         h('div', { style: 'margin:4px 0 8px;' }, answerText),
-        h('div', { class: 'muted' }, `${pr.correctCount} correct guess${pr.correctCount === 1 ? '' : 'es'} · +${pr.missedBy} to ${playerName(pr.authorId)} for staying hidden from ${pr.missedBy}`)
+        ...authorLines
       ]));
     });
-    wrap.appendChild(h('button', { class: 'primary', onclick: secretFinish }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt'));
+    wrap.appendChild(nextButton(rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt', secretFinish));
   }
   return wrap;
 }
@@ -1787,6 +1924,8 @@ function renderCrystalBall() {
   wrap.appendChild(roundBanner('Crystal Ball', `Turn ${rs.turnIndex + 1} / ${rs.totalTurns}`));
   wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'prompt-text' }, rs.promptText)]));
 
+  if (rs.subType === 'singleWord') { renderCrystalBallSingleWord(rs, wrap); return wrap; }
+
   if (rs.phase === 'choosing') {
     if (viewingAs !== rs.subjectId) {
       wrap.appendChild(waitingBlock(`Waiting on ${playerName(rs.subjectId)} to choose privately.`));
@@ -1795,8 +1934,8 @@ function renderCrystalBall() {
         h('button', { class: 'option-btn', onclick: () => crystalSubmitChoice(viewingAs, 'A') }, rs.optionA),
         h('button', { class: 'option-btn', onclick: () => crystalSubmitChoice(viewingAs, 'B') }, rs.optionB)
       ]));
-    } else if (rs.subType === 'number') {
-      const inp = h('input', { type: 'number', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
+    } else {
+      const inp = h('input', { type: 'number', id: 'write-input', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
       const err = h('div', { class: 'muted', style: 'color:var(--coral);font-size:12px;min-height:16px;' });
       const btn = h('button', { class: 'primary', disabled: true, onclick: () => { const v = Number(inp.value); if (numberInRange(inp.value, rs.min, rs.max)) crystalSubmitChoice(viewingAs, v); } }, 'Submit');
       inp.addEventListener('input', () => {
@@ -1810,8 +1949,6 @@ function renderCrystalBall() {
         h('div', { style: 'height:6px' }),
         btn
       ]));
-    } else {
-      wrap.appendChild(writeBox('Your honest one word.', (t) => crystalSubmitChoice(viewingAs, t)));
     }
   } else if (rs.phase === 'guessing') {
     if (viewingAs === rs.subjectId) {
@@ -1823,8 +1960,8 @@ function renderCrystalBall() {
         h('button', { class: 'option-btn', onclick: () => crystalSubmitGuess(viewingAs, 'A') }, rs.optionA),
         h('button', { class: 'option-btn', onclick: () => crystalSubmitGuess(viewingAs, 'B') }, rs.optionB)
       ]));
-    } else if (rs.subType === 'number') {
-      const inp = h('input', { type: 'number', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
+    } else {
+      const inp = h('input', { type: 'number', id: 'write-input', min: rs.min, max: rs.max, placeholder: `Between ${rs.min} and ${rs.max}` });
       const err = h('div', { class: 'muted', style: 'color:var(--coral);font-size:12px;min-height:16px;' });
       const btn = h('button', { class: 'primary', disabled: true, onclick: () => { const v = Number(inp.value); if (numberInRange(inp.value, rs.min, rs.max)) crystalSubmitGuess(viewingAs, v); } }, 'Submit');
       inp.addEventListener('input', () => {
@@ -1838,8 +1975,6 @@ function renderCrystalBall() {
         h('div', { style: 'height:6px' }),
         btn
       ]));
-    } else {
-      wrap.appendChild(writeBox('Your guess.', (t) => crystalSubmitGuess(viewingAs, t)));
     }
   } else if (rs.phase === 'reveal') {
     const actualLabel = rs.subType === 'binary' ? (rs.subjectChoice === 'A' ? rs.optionA : rs.optionB) : rs.subjectChoice;
@@ -1850,17 +1985,54 @@ function renderCrystalBall() {
     const list = h('div', { class: 'player-list' });
     Object.entries(rs.guesses).forEach(([pid, g]) => {
       const label = rs.subType === 'binary' ? (g === 'A' ? rs.optionA : rs.optionB) : String(g);
-      const gotIt = rs.subType === 'binary' ? g === rs.subjectChoice : rs.subType === 'singleWord' ? wordsMatch(g, rs.subjectChoice) : null;
+      const gotIt = rs.subType === 'binary' ? g === rs.subjectChoice : null;
       list.appendChild(h('div', { class: 'player-row' }, [
         h('span', {}, playerName(pid)),
         h('span', {}, [label, gotIt ? h('span', { class: 'tag', style: 'color:var(--mint);margin-left:8px;' }, 'close enough ✓') : null])
       ]));
     });
     wrap.appendChild(h('div', { class: 'card' }, list));
-    if (rs.subType === 'singleWord') wrap.appendChild(h('p', { class: 'muted' }, `Word guesses count if close: case, plurals and small typos don't matter.`));
-    wrap.appendChild(h('button', { class: 'primary', onclick: crystalNext }, rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn'));
+    wrap.appendChild(nextButton(rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn', crystalNext));
   }
   return wrap;
+}
+// Single-word only: everyone but the subject writes an answer, the
+// subject picks their favourite from an anonymised list, and the
+// winner (revealed once picked) gets the point. Kept as a separate
+// function since its phases don't overlap with binary/number at all.
+function renderCrystalBallSingleWord(rs, wrap) {
+  if (rs.phase === 'writing') {
+    if (viewingAs === rs.subjectId) {
+      wrap.appendChild(waitingBlock(`Everyone else is writing an answer for you to judge.`));
+    } else if (rs.judgeAnswers[viewingAs] !== undefined) {
+      wrap.appendChild(waitingBlock(`Answer locked in. Waiting on ${crystalEligibleGuessers().length - Object.keys(rs.judgeAnswers).length} more...`));
+    } else {
+      wrap.appendChild(writeBox(`Write your answer for ${playerName(rs.subjectId)} to judge.`, (t) => crystalSubmitJudgeAnswer(viewingAs, t)));
+    }
+  } else if (rs.phase === 'judging') {
+    if (viewingAs !== rs.subjectId) {
+      wrap.appendChild(waitingBlock(`Waiting on ${playerName(rs.subjectId)} to pick their favourite.`));
+    } else {
+      wrap.appendChild(h('p', { class: 'muted' }, 'Pick the one you like best. Anonymous for now, whoever wrote it gets the point once you choose.'));
+      const grid = h('div', { class: 'option-grid' });
+      rs.judgeOrder.forEach(authorId => {
+        grid.appendChild(h('button', { class: 'option-btn', onclick: () => crystalSubmitJudgePick(viewingAs, authorId) }, rs.judgeAnswers[authorId]));
+      });
+      wrap.appendChild(grid);
+    }
+  } else if (rs.phase === 'reveal') {
+    wrap.appendChild(h('div', { class: 'card raised' }, [
+      h('span', { class: 'eyebrow' }, `${playerName(rs.subjectId)} picked`),
+      h('div', { class: 'prompt-text', style: 'margin-top:6px;' }, rs.judgeAnswers[rs.winnerId]),
+      h('div', { class: 'muted', style: 'margin-top:4px;' }, `Written by ${playerName(rs.winnerId)} — +1 point`)
+    ]));
+    const list = h('div', { class: 'player-list' });
+    rs.judgeOrder.filter(id => id !== rs.winnerId).forEach(authorId => {
+      list.appendChild(h('div', { class: 'player-row' }, [h('span', {}, playerName(authorId)), h('span', {}, rs.judgeAnswers[authorId])]));
+    });
+    if (rs.judgeOrder.length > 1) wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'eyebrow' }, 'Everyone else wrote'), list]));
+    wrap.appendChild(nextButton(rs.turnIndex + 1 >= rs.totalTurns ? 'Continue to next round' : 'Next turn', crystalNext));
+  }
 }
 
 
@@ -1902,13 +2074,36 @@ function renderSayAnything() {
       ]));
     });
     wrap.appendChild(grid);
-    wrap.appendChild(h('button', { class: 'primary', onclick: sayAnythingNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt'));
+    wrap.appendChild(nextButton(rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next prompt', sayAnythingNext));
   }
   return wrap;
 }
 
 
 // ---------------- Trivia Bluff UI ----------------
+// Writing the real answer as your "fake" is rejected server-side too,
+// but silently, so this checks client-side first and explains why,
+// rather than leaving the submit button looking like it did nothing.
+function renderTriviaBluffWriteBox(rs) {
+  const box = h('div', { class: 'card raised' });
+  const t = h('textarea', {}); t.id = 'write-input';
+  const err = h('div', { class: 'muted', style: 'color:var(--coral);font-size:12px;min-height:16px;' });
+  box.appendChild(h('label', { class: 'field' }, ['Write a convincing fake answer.', t]));
+  box.appendChild(err);
+  box.appendChild(h('div', { style: 'height:6px' }));
+  box.appendChild(h('button', {
+    class: 'primary', onclick: () => {
+      const v = t.value.trim();
+      if (!v) return;
+      if (v.toLowerCase() === rs.question.a.trim().toLowerCase()) {
+        err.textContent = "That's the real answer! Write a convincing fake one instead.";
+        return;
+      }
+      triviaBluffSubmitFake(viewingAs, v);
+    }
+  }, 'Submit'));
+  return box;
+}
 function renderTriviaBluff() {
   const rs = DB.roundState;
   const wrap = document.createDocumentFragment();
@@ -1937,7 +2132,7 @@ function renderTriviaBluff() {
     if (rs.fakeAnswers[viewingAs] !== undefined) {
       wrap.appendChild(waitingBlock(`Fake answer locked in. Waiting on ${playerIds().length - Object.keys(rs.fakeAnswers).length} more player(s)...`));
     } else {
-      wrap.appendChild(writeBox('Write a convincing fake answer.', (t) => triviaBluffSubmitFake(viewingAs, t)));
+      wrap.appendChild(renderTriviaBluffWriteBox(rs));
     }
   } else if (rs.phase === 'voting') {
     wrap.appendChild(h('div', { class: 'card' }, [
@@ -1966,7 +2161,7 @@ function renderTriviaBluff() {
       ]));
     });
     wrap.appendChild(grid);
-    wrap.appendChild(h('button', { class: 'primary', onclick: triviaBluffNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next question'));
+    wrap.appendChild(nextButton(rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next question', triviaBluffNext));
   }
   return wrap;
 }
@@ -2014,7 +2209,7 @@ function renderImposter() {
     ]));
     const votesForImposter = Object.values(rs.votes).filter(v => v === rs.imposterId).length;
     wrap.appendChild(h('div', { class: 'score-flash' }, `${votesForImposter} of ${playerIds().length - 1} correctly suspected them.`));
-    wrap.appendChild(h('button', { class: 'primary', onclick: imposterNext }, rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next imposter'));
+    wrap.appendChild(nextButton(rs.instanceIndex + 1 >= rs.totalInstances ? 'Continue to next round' : 'Next imposter', imposterNext));
   }
   return wrap;
 }
@@ -2039,7 +2234,7 @@ function renderRoundSummary() {
     ]));
   });
   wrap.appendChild(h('div', { class: 'card' }, [h('div', { class: 'eyebrow' }, 'This round · running total'), list]));
-  wrap.appendChild(h('button', { class: 'primary', onclick: continueFromRoundSummary }, DB.session.currentRoundIndex + 1 >= DB.session.roundOrder.length ? 'See final scoreboard' : 'Continue'));
+  wrap.appendChild(nextButton(DB.session.currentRoundIndex + 1 >= DB.session.roundOrder.length ? 'See final scoreboard' : 'Continue', continueFromRoundSummary));
   return wrap;
 }
 function renderSessionEnd() {
